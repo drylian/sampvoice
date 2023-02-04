@@ -12,7 +12,7 @@
 #include <Windows.h>
 #include <d3d9.h>
 
-struct ImGuiUtil {
+class ImGuiUtil {
 
     ImGuiUtil() = delete;
     ~ImGuiUtil() = delete;
@@ -23,7 +23,7 @@ struct ImGuiUtil {
 
 public:
 
-    static bool Init(IDirect3DDevice9* device) noexcept;
+    static bool Init(IDirect3DDevice9* pDevice) noexcept;
     static bool IsInited() noexcept;
     static void Free() noexcept;
 
@@ -33,13 +33,14 @@ public:
 
 public:
 
-    static LRESULT WindowProc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) noexcept;
+    static LRESULT WindowProc(HWND hWnd, UINT uMsg,
+        WPARAM wParam, LPARAM lParam) noexcept;
 
 private:
 
-    static bool _init_status;
-    static bool _win32_load_status;
-    static bool _dx9_load_status;
-    static bool _render_status;
+    static bool initStatus;
+    static bool win32loadStatus;
+    static bool dx9loadStatus;
+    static bool renderStatus;
 
 };

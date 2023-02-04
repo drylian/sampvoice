@@ -9,46 +9,48 @@
 
 #pragma once
 
+#include <memory>
+
 #include <d3d9.h>
 #include <d3dx9.h>
 
 #include "Resource.h"
 
-struct Texture {
+class Texture {
 
-    Texture() noexcept = default;
-    ~Texture() noexcept;
+    Texture() = delete;
     Texture(const Texture&) = delete;
-    Texture(Texture&& object) noexcept;
+    Texture(Texture&&) = delete;
     Texture& operator=(const Texture&) = delete;
-    Texture& operator=(Texture&& object) noexcept;
+    Texture& operator=(Texture&&) = delete;
 
 public:
 
-    Texture(IDirect3DDevice9* device, const Resource& resource) noexcept;
+    explicit Texture(IDirect3DDevice9* pDevice,
+                     const Resource& rTexture);
 
-public:
-
-    bool Valid() const noexcept;
+    ~Texture() noexcept;
 
 public:
 
     IDirect3DTexture9* GetTexture() const noexcept;
     ID3DXSprite* GetSprite() const noexcept;
-
     UINT GetWidth() const noexcept;
     UINT GetHeight() const noexcept;
 
 public:
 
-    void Draw(float x, float y, float width, float height, D3DCOLOR color, float angle) noexcept;
+    void Draw(float x, float y, float width, float height,
+              D3DCOLOR color, float angle) const noexcept;
 
 private:
 
-    IDirect3DTexture9* _texture = nullptr;
-    ID3DXSprite*       _sprite  = nullptr;
-
-    UINT               _width   = 0;
-    UINT               _height  = 0;
+    IDirect3DTexture9* pTexture { nullptr };
+    ID3DXSprite* pSprite { nullptr };
+    UINT textureWidth { 0 };
+    UINT textureHeight { 0 };
 
 };
+
+using TexturePtr = std::unique_ptr<Texture>;
+#define MakeTexture std::make_unique<Texture>

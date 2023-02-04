@@ -6,34 +6,35 @@
 
 #include "StreamInfo.h"
 
-StreamAtVehicle::StreamAtVehicle(const D3DCOLOR color, std::string name, const float distance, const WORD vehicle_id) noexcept
-    : LocalStream { StreamType::LocalStreamAtVehicle, color, std::move(name), distance }
-    , _vehicle_id { vehicle_id }
+StreamAtVehicle::StreamAtVehicle(const D3DCOLOR color, std::string name,
+                                 const float distance, const WORD vehicleId) noexcept
+    : LocalStream(StreamType::LocalStreamAtVehicle, color, std::move(name), distance)
+    , vehicleId(vehicleId)
 {}
 
 void StreamAtVehicle::Tick() noexcept
 {
-    LocalStream::Tick();
+    this->LocalStream::Tick();
 
-    if (const auto net_game = SAMP::pNetGame(); net_game != nullptr)
+    const auto pNetGame = SAMP::pNetGame();
+    if (!pNetGame) return;
+
+    const auto pVehiclePool = pNetGame->GetVehiclePool();
+    if (!pVehiclePool) return;
+
+    const auto pVehicle = pVehiclePool->m_pGameObject[this->vehicleId];
+    if (!pVehicle) return;
+
+    const auto pVehicleMatrix = pVehicle->GetMatrix();
+    if (!pVehicleMatrix) return;
+
+    for (const auto& channel : this->GetChannels())
     {
-        if (const auto vehicle_pool = net_game->GetVehiclePool(); vehicle_pool != nullptr)
+        if (channel->HasSpeaker())
         {
-            if (const auto vehicle = vehicle_pool->m_pGameObject[_vehicle_id]; vehicle != nullptr)
-            {
-                if (const auto vehicle_matrix = vehicle->GetMatrix(); vehicle_matrix != nullptr)
-                {
-                    for (const auto& channel : GetChannels())
-                    {
-                        if (channel.HasSpeaker())
-                        {
-                            BASS_ChannelSet3DPosition(channel.GetHandle(),
-                                reinterpret_cast<BASS_3DVECTOR*>(&vehicle_matrix->pos),
-                                nullptr, nullptr);
-                        }
-                    }
-                }
-            }
+            BASS_ChannelSet3DPosition(channel->GetHandle(),
+                reinterpret_cast<BASS_3DVECTOR*>(&pVehicleMatrix->pos),
+                nullptr, nullptr);
         }
     }
 }
@@ -42,21 +43,21 @@ void StreamAtVehicle::OnChannelCreate(const Channel& channel) noexcept
 {
     static const BASS_3DVECTOR kZeroVector { 0, 0, 0 };
 
-    LocalStream::OnChannelCreate(channel);
+    this->LocalStream::OnChannelCreate(channel);
 
-    if (const auto net_game = SAMP::pNetGame(); net_game != nullptr)
-    {
-        if (const auto vehicle_pool = net_game->GetVehiclePool(); vehicle_pool != nullptr)
-        {
-            if (const auto vehicle = vehicle_pool->m_pGameObject[_vehicle_id]; vehicle != nullptr)
-            {
-                if (const auto vehicle_matrix = vehicle->GetMatrix(); vehicle_matrix != nullptr)
-                {
-                    BASS_ChannelSet3DPosition(channel.GetHandle(),
-                        reinterpret_cast<BASS_3DVECTOR*>(&vehicle_matrix->pos),
-                        &kZeroVector, &kZeroVector);
-                }
-            }
-        }
-    }
+    const auto pNetGame = SAMP::pNetGame();
+    if (!pNetGame) return;
+
+    const auto pVehiclePool = pNetGame->GetVehiclePool();
+    if (!pVehiclePool) return;
+
+    const auto pVehicle = pVehiclePool->m_pGameObject[this->vehicleId];
+    if (!pVehicle) return;
+
+    const auto pVehicleMatrix = pVehicle->GetMatrix();
+    if (!pVehicleMatrix) return;
+
+    BASS_ChannelSet3DPosition(channel.GetHandle(),
+        reinterpret_cast<BASS_3DVECTOR*>(&pVehicleMatrix->pos),
+        &kZeroVector, &kZeroVector);
 }

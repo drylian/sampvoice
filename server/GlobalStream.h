@@ -24,7 +24,7 @@ class GlobalStream : public Stream {
 
 public:
 
-    explicit GlobalStream(uint32_t color, const std::vector<char>& name);
+    explicit GlobalStream(uint32_t color, const std::string& name);
 
     ~GlobalStream() noexcept = default;
 

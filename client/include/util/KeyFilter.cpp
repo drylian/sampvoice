@@ -11,26 +11,28 @@
 
 #include "Logger.h"
 
-bool KeyFilter::AddKey(const BYTE key_id) noexcept
+bool KeyFilter::AddKey(const BYTE keyId) noexcept
 {
-    if (_status_keys[key_id]) return false;
+    if (KeyFilter::statusKeys[keyId])
+        return false;
 
-    Logger::LogToFile("[dbg:keyfilter] : adding key (id:0x%hhx)...", key_id);
+    Logger::LogToFile("[dbg:keyfilter] : adding key (id:0x%hhx)...", keyId);
 
-    _status_keys[key_id] = true;
+    KeyFilter::statusKeys[keyId] = true;
 
     return true;
 }
 
-bool KeyFilter::RemoveKey(const BYTE key_id) noexcept
+bool KeyFilter::RemoveKey(const BYTE keyId) noexcept
 {
-    PushReleaseEvent(key_id);
+    KeyFilter::PushReleaseEvent(keyId);
 
-    if (!_status_keys[key_id]) return false;
+    if (!KeyFilter::statusKeys[keyId])
+        return false;
 
-    Logger::LogToFile("[dbg:keyfilter] : removing key (id:0x%hhx)...", key_id);
+    Logger::LogToFile("[dbg:keyfilter] : removing key (id:0x%hhx)...", keyId);
 
-    _status_keys[key_id] = false;
+    KeyFilter::statusKeys[keyId] = false;
 
     return true;
 }
@@ -39,60 +41,67 @@ void KeyFilter::RemoveAllKeys() noexcept
 {
     Logger::LogToFile("[dbg:keyfilter] : removing all keys...");
 
-    for (WORD key_id = 0; key_id < _status_keys.size(); ++key_id)
-    {
-        RemoveKey(key_id);
-    }
+    for (WORD keyId { 0 }; keyId < KeyFilter::statusKeys.size(); ++keyId)
+        KeyFilter::RemoveKey(keyId);
 
-    _active_keys = 0;
+    KeyFilter::activeKeys = 0;
 }
 
 void KeyFilter::ReleaseAllKeys() noexcept
 {
     Logger::LogToFile("[dbg:keyfilter] : releasing all keys...");
 
-    for (WORD key_id = 0; key_id < _status_keys.size(); ++key_id)
-    {
-        PushReleaseEvent(key_id);
-    }
+    for (WORD keyId { 0 }; keyId < KeyFilter::statusKeys.size(); ++keyId)
+        KeyFilter::PushReleaseEvent(keyId);
 
-    _active_keys = 0;
+    KeyFilter::activeKeys = 0;
 }
 
-bool KeyFilter::PushPressEvent(const BYTE key_id) noexcept
+bool KeyFilter::PushPressEvent(const BYTE keyId) noexcept
 {
-    if (!_status_keys[key_id]) return false;
-    if (_pressed_keys[key_id]) return false;
+    if (!KeyFilter::statusKeys[keyId])
+        return false;
 
-    _pressed_keys[key_id] = _key_queue.try_emplace(key_id, true, _active_keys + 1);
-    if (_pressed_keys[key_id]) ++_active_keys;
+    if (KeyFilter::pressedKeys[keyId])
+        return false;
 
-    return _pressed_keys[key_id];
+    KeyFilter::pressedKeys[keyId] = KeyFilter::keyQueue
+        .try_emplace(keyId, true, KeyFilter::activeKeys + 1);
+
+    if (KeyFilter::pressedKeys[keyId])
+        ++KeyFilter::activeKeys;
+
+    return KeyFilter::pressedKeys[keyId];
 }
 
-bool KeyFilter::PushReleaseEvent(const BYTE key_id) noexcept
+bool KeyFilter::PushReleaseEvent(const BYTE keyId) noexcept
 {
-    if (!_pressed_keys[key_id]) return false;
+    if (!KeyFilter::pressedKeys[keyId])
+        return false;
 
-    _pressed_keys[key_id] = !_key_queue.try_emplace(key_id, false, _active_keys - 1);
-    if (!_pressed_keys[key_id]) --_active_keys;
+    KeyFilter::pressedKeys[keyId] = !KeyFilter::keyQueue
+        .try_emplace(keyId, false, KeyFilter::activeKeys - 1);
 
-    return !_pressed_keys[key_id];
+    if (!KeyFilter::pressedKeys[keyId])
+        --KeyFilter::activeKeys;
+
+    return !KeyFilter::pressedKeys[keyId];
 }
 
 bool KeyFilter::PopEvent(KeyEvent& event) noexcept
 {
-    if (_key_queue.empty()) return false;
+    if (KeyFilter::keyQueue.empty())
+        return false;
 
-    event = *_key_queue.front();
-    _key_queue.pop();
+    event = *KeyFilter::keyQueue.front();
+    KeyFilter::keyQueue.pop();
 
     return true;
 }
 
-SPSCQueue<KeyEvent> KeyFilter::_key_queue { 256 };
+SPSCQueue<KeyEvent> KeyFilter::keyQueue { 256 };
 
-std::array<bool, 256> KeyFilter::_pressed_keys;
-std::array<bool, 256> KeyFilter::_status_keys;
+std::array<bool, 256> KeyFilter::pressedKeys {};
+std::array<bool, 256> KeyFilter::statusKeys {};
 
-int KeyFilter::_active_keys = 0;
+int KeyFilter::activeKeys { 0 };

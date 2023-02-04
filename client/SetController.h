@@ -7,10 +7,9 @@
 #include "Parameter.h"
 #include "Channel.h"
 
-struct SetController : public Parameter {
+class SetController : public Parameter {
 
     SetController() = delete;
-    ~SetController() noexcept = default;
     SetController(const SetController&) = delete;
     SetController(SetController&&) = delete;
     SetController& operator=(const SetController&) = delete;
@@ -18,14 +17,19 @@ struct SetController : public Parameter {
 
 public:
 
-    SetController(DWORD parameter, float value) noexcept;
+    explicit SetController(DWORD parameter, float value) noexcept;
+
+    ~SetController() noexcept = default;
 
 public:
 
-    virtual void Apply(const Channel& channel) noexcept override;
+    void Apply(const Channel& channel) const noexcept override;
 
 private:
 
-    float _value;
+    const float value;
 
 };
+
+using SetControllerPtr = std::unique_ptr<SetController>;
+#define MakeSetController std::make_unique<SetController>

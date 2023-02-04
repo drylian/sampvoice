@@ -1,11 +1,9 @@
 #include "SetController.h"
 
 SetController::SetController(const DWORD parameter, const float value) noexcept
-    : Parameter { parameter }
-    , _value    { value }
-{}
+    : Parameter(parameter), value(value) {}
 
-void SetController::Apply(const Channel& channel) noexcept
+void SetController::Apply(const Channel& channel) const noexcept
 {
-    BASS_ChannelSetAttribute(channel.GetHandle(), _parameter, _value);
+    BASS_ChannelSetAttribute(channel.GetHandle(), this->parameter, this->value);
 }

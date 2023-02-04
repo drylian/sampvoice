@@ -13,7 +13,7 @@ static DWORD CalcCrc32cHash(LPCBYTE buffer, DWORD length, DWORD crc = 0) noexcep
 {
     crc = ~crc;
 
-    while (length-- != 0)
+    while (length--)
     {
         crc ^= *buffer++;
 
@@ -28,15 +28,21 @@ static DWORD CalcCrc32cHash(LPCBYTE buffer, DWORD length, DWORD crc = 0) noexcep
 
 DWORD VoicePacket::GetFullSize() const noexcept
 {
-    return sizeof(*this) + length;
+    return sizeof(*this) + this->length;
 }
 
 bool VoicePacket::CheckHeader() const noexcept
 {
-    return hash == CalcCrc32cHash((PBYTE)(this) + sizeof(hash), sizeof(*this) - sizeof(hash));
+    return this->hash == CalcCrc32cHash(
+        (PBYTE)(this) + sizeof(this->hash),
+        sizeof(*this) - sizeof(this->hash)
+    );
 }
 
 void VoicePacket::CalcHash() noexcept
 {
-    hash = CalcCrc32cHash((PBYTE)(this) + sizeof(hash), sizeof(*this) - sizeof(hash));
+    this->hash = CalcCrc32cHash(
+        (PBYTE)(this) + sizeof(this->hash),
+        sizeof(*this) - sizeof(this->hash)
+    );
 }

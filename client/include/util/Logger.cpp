@@ -9,18 +9,34 @@
 
 #include "Logger.h"
 
-bool Logger::Init(const char* const path) noexcept
+bool Logger::Init(const char* const fileName) noexcept
 {
-    return _log_file == nullptr && (_log_file = std::fopen(path, "wt")) != nullptr;
+    const std::scoped_lock lock { Logger::logFileMutex };
+
+    if (Logger::logFile != nullptr)
+        return false;
+
+    Logger::logFile = std::fopen(fileName, "wt");
+
+    if (Logger::logFile == nullptr)
+        return false;
+
+    return true;
 }
 
-void Logger::Free() noexcept
+bool Logger::Free() noexcept
 {
-    std::fclose(_log_file);
-    _log_file = nullptr;
+    const std::scoped_lock lock { Logger::logFileMutex };
+
+    if (std::fclose(Logger::logFile) == EOF)
+        return false;
+
+    Logger::logFile = nullptr;
+
+    return true;
 }
 
-std::FILE* Logger::_log_file = nullptr;
+std::FILE* Logger::logFile { nullptr };
 
-std::mutex Logger::_log_file_mutex;
-std::mutex Logger::_log_chat_mutex;
+std::mutex Logger::logFileMutex;
+std::mutex Logger::logChatMutex;

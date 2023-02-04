@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include <d3d9.h>
@@ -16,10 +17,9 @@
 #include "LocalStream.h"
 #include "Channel.h"
 
-struct StreamAtObject : public LocalStream {
+class StreamAtObject : public LocalStream {
 
     StreamAtObject() = delete;
-    ~StreamAtObject() noexcept = default;
     StreamAtObject(const StreamAtObject&) = delete;
     StreamAtObject(StreamAtObject&&) = delete;
     StreamAtObject& operator=(const StreamAtObject&) = delete;
@@ -27,18 +27,24 @@ struct StreamAtObject : public LocalStream {
 
 public:
 
-    StreamAtObject(D3DCOLOR color, std::string name, float distance, WORD object_id) noexcept;
+    explicit StreamAtObject(D3DCOLOR color, std::string name,
+                            float distance, WORD objectId) noexcept;
+
+    ~StreamAtObject() noexcept = default;
 
 public:
 
-    virtual void Tick() noexcept override;
+    void Tick() noexcept override;
 
 private:
 
-    virtual void OnChannelCreate(const Channel& channel) noexcept override;
+    void OnChannelCreate(const Channel& channel) noexcept override;
 
 private:
 
-    WORD _object_id;
+    const WORD objectId;
 
 };
+
+using StreamAtObjectPtr = std::unique_ptr<StreamAtObject>;
+#define MakeStreamAtObject std::make_unique<StreamAtObject>

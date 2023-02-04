@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include <d3d9.h>
@@ -16,10 +17,9 @@
 #include "LocalStream.h"
 #include "Channel.h"
 
-struct StreamAtVehicle : public LocalStream {
+class StreamAtVehicle : public LocalStream {
 
     StreamAtVehicle() = delete;
-    ~StreamAtVehicle() noexcept = default;
     StreamAtVehicle(const StreamAtVehicle&) = delete;
     StreamAtVehicle(StreamAtVehicle&&) = delete;
     StreamAtVehicle& operator=(const StreamAtVehicle&) = delete;
@@ -27,18 +27,24 @@ struct StreamAtVehicle : public LocalStream {
 
 public:
 
-    StreamAtVehicle(D3DCOLOR color, std::string name, float distance, WORD vehicle_id) noexcept;
+    explicit StreamAtVehicle(D3DCOLOR color, std::string name,
+                             float distance, WORD vehicleId) noexcept;
+
+    ~StreamAtVehicle() noexcept = default;
 
 public:
 
-    virtual void Tick() noexcept override;
+    void Tick() noexcept override;
 
 private:
 
-    virtual void OnChannelCreate(const Channel& channel) noexcept override;
+    void OnChannelCreate(const Channel& channel) noexcept override;
 
 private:
 
-    WORD _vehicle_id;
+    const WORD vehicleId;
 
 };
+
+using StreamAtVehiclePtr = std::unique_ptr<StreamAtVehicle>;
+#define MakeStreamAtVehicle std::make_unique<StreamAtVehicle>

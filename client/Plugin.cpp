@@ -38,23 +38,22 @@
 #include "StreamAtObject.h"
 #include "Header.h"
 
-#define FontResource             IDR_FONT1, RT_FONT
-#define LogoIconResource         IDB_PNG1,  "PNG"
-#define BlurShaderResource       IDR_HLSL1, "HLSL"
-#define PassiveMicroIconResource IDB_PNG4,  "PNG"
-#define ActiveMicroIconResource  IDB_PNG2,  "PNG"
-#define MutedMicroIconResource   IDB_PNG3,  "PNG"
-#define SpeakerIconResource      IDB_PNG5,  "PNG"
+#define FontResource IDR_FONT1, RT_FONT
+#define LogoIconResource IDB_PNG1, "PNG"
+#define BlurShaderResource IDR_HLSL1, "HLSL"
+#define PassiveMicroIconResource IDB_PNG4, "PNG"
+#define ActiveMicroIconResource IDB_PNG2, "PNG"
+#define MutedMicroIconResource IDB_PNG3, "PNG"
+#define SpeakerIconResource IDB_PNG5, "PNG"
 
-bool Plugin::OnPluginLoad(const HMODULE module) noexcept
+bool Plugin::OnPluginLoad(const HMODULE hModule) noexcept
 {
-    if ((_module = module) == nullptr)
+    if (hModule == nullptr)
         return false;
 
-    _sv_directory = GameUtil::GetSampvoiceDirectory();
-    if (_sv_directory.empty()) return false;
+    Plugin::pModuleHandle = hModule;
 
-    if (!Logger::Init((_sv_directory + '\\' + SV::kLogFileName).c_str()))
+    if (!Logger::Init(Path() / SV::kLogFileName))
         return false;
 
     if (!Render::Init())
@@ -64,25 +63,25 @@ bool Plugin::OnPluginLoad(const HMODULE module) noexcept
         return false;
     }
 
-    Render::SetDeviceInitCallback(OnDeviceInit);
-    Render::SetBeforeResetCallback(OnBeforeReset);
-    Render::SetRenderCallback(OnRender);
-    Render::SetAfterResetCallback(OnAfterReset);
-    Render::SetDeviceFreeCallback(OnDeviceFree);
+    Render::AddDeviceInitCallback(Plugin::OnDeviceInit);
+    Render::AddBeforeResetCallback(Plugin::OnBeforeReset);
+    Render::AddRenderCallback(Plugin::OnRender);
+    Render::AddAfterResetCallback(Plugin::OnAfterReset);
+    Render::AddDeviceFreeCallback(Plugin::OnDeviceFree);
 
     return true;
 }
 
-bool Plugin::OnSampLoad(const HMODULE module) noexcept
+bool Plugin::OnSampLoad(const HMODULE hModule) noexcept
 {
-    _addresses = { reinterpret_cast<DWORD>(module) };
+    Plugin::pAddresses = MakeAddressesBase(reinterpret_cast<DWORD>(hModule));
 
-    if (!PluginConfig::Load(_sv_directory + '\\' + SV::kConfigFileName))
+    if (!PluginConfig::Load(Path() / SV::kConfigFileName))
     {
         Logger::LogToFile("[sv:err:plugin] : failed to load configs");
     }
 
-    if (!Samp::Init(_addresses))
+    if (!Samp::Init(*Plugin::pAddresses))
     {
         Logger::LogToFile("[sv:err:plugin] : failed to init samp");
         Render::Free();
@@ -90,10 +89,10 @@ bool Plugin::OnSampLoad(const HMODULE module) noexcept
         return false;
     }
 
-    Samp::SetLoadCallback(OnInitGame);
-    Samp::SetExitCallback(OnExitGame);
+    Samp::AddLoadCallback(Plugin::OnInitGame);
+    Samp::AddExitCallback(Plugin::OnExitGame);
 
-    if (!Network::Init(_addresses))
+    if (!Network::Init(*Plugin::pAddresses))
     {
         Logger::LogToFile("[sv:err:plugin] : failed to init network");
         Samp::Free();
@@ -102,12 +101,12 @@ bool Plugin::OnSampLoad(const HMODULE module) noexcept
         return false;
     }
 
-    Network::SetConnectCallback(ConnectHandler);
-    Network::SetSvConnectCallback(PluginConnectHandler);
-    Network::SetSvInitCallback(PluginInitHandler);
-    Network::SetDisconnectCallback(DisconnectHandler);
+    Network::AddConnectCallback(Plugin::ConnectHandler);
+    Network::AddSvConnectCallback(Plugin::PluginConnectHandler);
+    Network::AddSvInitCallback(Plugin::PluginInitHandler);
+    Network::AddDisconnectCallback(Plugin::DisconnectHandler);
 
-    if (!Playback::Init(_addresses))
+    if (!Playback::Init(*Plugin::pAddresses))
     {
         Logger::LogToFile("[sv:err:plugin] : failed to init playback");
         Network::Free();
@@ -122,9 +121,9 @@ bool Plugin::OnSampLoad(const HMODULE module) noexcept
 
 void Plugin::OnInitGame() noexcept
 {
-    _draw_radar_hook = { reinterpret_cast<LPVOID>(0x58FC53), &DrawRadarHook };
+    Plugin::drawRadarHook = MakeCallHook(0x58FC53, Plugin::DrawRadarHook);
 
-    GameUtil::DisableAntiCheat(_addresses.GetBaseAddr());
+    GameUtil::DisableAntiCheat(*Plugin::pAddresses);
 
     SpeakerList::Show();
     MicroIcon::Show();
@@ -134,12 +133,12 @@ void Plugin::OnExitGame() noexcept
 {
     Network::Free();
 
-    _stream_table.clear();
+    Plugin::streamTable.clear();
 
     Record::Free();
     Playback::Free();
 
-    PluginConfig::Save(_sv_directory + '\\' + SV::kConfigFileName);
+    PluginConfig::Save(Path() / SV::kConfigFileName);
     BlackList::Free();
 
     Render::Free();
@@ -148,149 +147,146 @@ void Plugin::OnExitGame() noexcept
 
 void Plugin::MainLoop()
 {
-    if (Samp::IsLoaded())
+    if (!Samp::IsLoaded()) return;
+
+    if (Plugin::gameStatus && !GameUtil::IsGameActive())
     {
-        if (_game_status && !GameUtil::IsGameActive())
+        Logger::LogToFile("[sv:dbg:plugin] : game paused");
+
+        for (const auto& stream : Plugin::streamTable)
+            stream.second->Reset();
+
+        KeyFilter::ReleaseAllKeys();
+        Plugin::gameStatus = false;
+    }
+    else if (!Plugin::gameStatus && GameUtil::IsGameActive())
+    {
+        Logger::LogToFile("[sv:dbg:plugin] : game resumed");
+
+        for (const auto& stream : Plugin::streamTable)
+            stream.second->Reset();
+
+        Plugin::gameStatus = true;
+    }
+
+    while (const auto controlPacket = Network::ReceiveControlPacket())
+    {
+        Plugin::ControlPacketHandler(*&*controlPacket);
+    }
+
+    while (const auto voicePacket = Network::ReceiveVoicePacket())
+    {
+        const auto& voicePacketRef = *voicePacket;
+
+        if (BlackList::IsPlayerBlocked(voicePacketRef->sender))
+            continue;
+
+        const auto iter = Plugin::streamTable.find(voicePacketRef->stream);
+        if (iter == Plugin::streamTable.end()) continue;
+
+        iter->second->Push(*&voicePacketRef);
+    }
+
+    for (const auto& stream : Plugin::streamTable)
+        stream.second->Tick();
+
+    Playback::Tick();
+    Record::Tick();
+
+    KeyEvent keyEvent;
+
+    while (KeyFilter::PopEvent(keyEvent))
+    {
+        if (keyEvent.isPressed)
         {
-            Logger::LogToFile("[sv:dbg:plugin] : game paused");
+            Logger::LogToFile("[sv:dbg:plugin] : activation key(%hhx) pressed", keyEvent.keyId);
 
-            for (const auto& stream : _stream_table)
-                stream.second->Reset();
+            if (!Record::GetMicroEnable()) continue;
 
-            KeyFilter::ReleaseAllKeys();
-
-            _game_status = false;
-        }
-        else if (!_game_status && GameUtil::IsGameActive())
-        {
-            Logger::LogToFile("[sv:dbg:plugin] : game resumed");
-
-            for (const auto& stream : _stream_table)
-                stream.second->Reset();
-
-            _game_status = true;
-        }
-
-        for (ControlPacketContainer control_packet; Network::ReceiveControlPacket(control_packet);)
-        {
-            ControlPacketHandler(*control_packet);
-        }
-
-        for (VoicePacketContainer voice_packet; Network::ReceiveVoicePacket(voice_packet);)
-        {
-            if (!BlackList::IsPlayerBlocked(voice_packet->sender))
+            if (!Plugin::recordBusy && !Plugin::recordStatus && keyEvent.activeKeys == 1)
             {
-                if (const auto iter  = _stream_table.find(voice_packet->stream);
-                               iter != _stream_table.end())
+                if (!Plugin::muteStatus)
                 {
-                    iter->second->Push(*voice_packet);
+                    Plugin::recordStatus = true;
+                    MicroIcon::SwitchToActiveIcon();
+                    Record::StartRecording();
+                }
+                else
+                {
+                    MicroIcon::SwitchToMutedIcon();
                 }
             }
+
+            if (Plugin::muteStatus) continue;
+
+            SV::PressKeyPacket pressKeyPacket {};
+
+            pressKeyPacket.keyId = keyEvent.keyId;
+
+            if (!Network::SendControlPacket(SV::ControlPacketType::pressKey, &pressKeyPacket, sizeof(pressKeyPacket)))
+                Logger::LogToFile("[sv:err:main:HookWndProc] : failed to send PressKey packet");
         }
-
-        for (const auto& stream : _stream_table)
+        else
         {
-            stream.second->Tick();
+            Logger::LogToFile("[sv:dbg:plugin] : activation key(%hhx) released", keyEvent.keyId);
+
+            if (!Record::GetMicroEnable()) continue;
+
+            if (!Plugin::recordBusy && Plugin::recordStatus && !keyEvent.activeKeys)
+            {
+                MicroIcon::SwitchToPassiveIcon();
+                Plugin::recordStatus = false;
+            }
+
+            if (Plugin::muteStatus) continue;
+
+            SV::ReleaseKeyPacket releaseKeyPacket {};
+
+            releaseKeyPacket.keyId = keyEvent.keyId;
+
+            if (!Network::SendControlPacket(SV::ControlPacketType::releaseKey, &releaseKeyPacket, sizeof(releaseKeyPacket)))
+                Logger::LogToFile("[sv:err:main:HookWndProc] : failed to send ReleaseKey packet");
         }
+    }
 
-        Playback::Tick();
-        Record::Tick();
+    BYTE frameBuffer[Network::kMaxVoiceDataSize];
 
-        for (KeyEvent key_event; KeyFilter::PopEvent(key_event))
+    if (const auto frameSize = Record::GetFrame(frameBuffer, sizeof(frameBuffer)))
+    {
+        if (!Network::SendVoicePacket(frameBuffer, frameSize))
+            Logger::LogToFile("[sv:err:plugin] : failed to send voice packet");
+
+        if (!Plugin::recordStatus)
         {
-            if (key_event.is_pressed)
-            {
-                Logger::LogToFile("[sv:dbg:plugin] : activation key(%hhx) pressed", key_event.key_id);
-
-                if (Record::GetMicroEnable())
-                {
-                    if (!_record_busy && !_record_status && key_event.active_keys == 1)
-                    {
-                        if (!_mute_status)
-                        {
-                            _record_status = true;
-                            MicroIcon::SwitchToActiveIcon();
-                            Record::StartRecording();
-                        }
-                        else
-                        {
-                            MicroIcon::SwitchToMutedIcon();
-                        }
-                    }
-                    if (!_mute_status)
-                    {
-                        SV::PressKeyPacket press_key_packet {};
-
-                        press_key_packet.keyId = key_event.key_id;
-
-                        if (!Network::SendControlPacket(SV::ControlPacketType::pressKey, &press_key_packet, sizeof(press_key_packet)))
-                            Logger::LogToFile("[sv:err:main:HookWndProc] : failed to send PressKey packet");
-                    }
-                }
-            }
-            else
-            {
-                Logger::LogToFile("[sv:dbg:plugin] : activation key(%hhx) released", key_event.key_id);
-
-                if (Record::GetMicroEnable())
-                {
-                    if (!_record_busy && _record_status && !key_event.active_keys)
-                    {
-                        MicroIcon::SwitchToPassiveIcon();
-                        _record_status = false;
-                    }
-                    if (!_mute_status)
-                    {
-                        SV::ReleaseKeyPacket release_key_packet {};
-
-                        release_key_packet.keyId = key_event.key_id;
-
-                        if (!Network::SendControlPacket(SV::ControlPacketType::releaseKey, &release_key_packet, sizeof(release_key_packet)))
-                            Logger::LogToFile("[sv:err:main:HookWndProc] : failed to send ReleaseKey packet");
-                    }
-                }
-            }
-        }
-
-        BYTE frame_buffer[Network::kMaxVoiceDataSize];
-
-        if (const auto frame_size = Record::GetFrame(frame_buffer, sizeof(frame_buffer)))
-        {
-            if (!Network::SendVoicePacket(frame_buffer, frame_size))
-                Logger::LogToFile("[sv:err:plugin] : failed to send voice packet");
-
-            if (!_record_status)
-            {
-                Record::StopRecording();
-                Network::EndSequence();
-            }
+            Record::StopRecording();
+            Network::EndSequence();
         }
     }
 }
 
-void Plugin::ConnectHandler(const std::string& host, const WORD port)
+void Plugin::ConnectHandler(const std::string& serverIp, const WORD serverPort)
 {
-    _blacklist_file_path = _sv_directory + "\\" "svblacklist_"
-        + host + "_" + std::to_string(port) + ".txt";
+    Plugin::blacklistFilePath = static_cast<const std::string&>(Path() /
+        "svblacklist_" + serverIp + "_" + std::to_string(serverPort) + ".txt");
 
-    if (!BlackList::Load(_blacklist_file_path))
+    if (!BlackList::Load(Plugin::blacklistFilePath))
         Logger::LogToFile("[sv:err:plugin] : failed to open blacklist file");
-    if (!BlackList::Init(_addresses))
+    if (!BlackList::Init(*Plugin::pAddresses))
         Logger::LogToFile("[sv:err:plugin] : failed to init blacklist");
 }
 
-void Plugin::PluginConnectHandler(SV::ConnectPacket& connect_data) noexcept
+void Plugin::PluginConnectHandler(SV::ConnectPacket& connectStruct)
 {
-    connect_data.signature = SV::kSignature;
-    connect_data.version = SV::kVersion;
-    connect_data.micro = Record::HasMicro();
+    connectStruct.signature = SV::kSignature;
+    connectStruct.version = SV::kVersion;
+    connectStruct.micro = Record::HasMicro();
 }
 
-bool Plugin::PluginInitHandler(const SV::PluginInitPacket& plugin_data)
+bool Plugin::PluginInitHandler(const SV::PluginInitPacket& initPacket)
 {
-    _mute_status = plugin_data.mute;
+    Plugin::muteStatus = initPacket.mute;
 
-    if (!Record::Init(plugin_data.bitrate))
+    if (!Record::Init(initPacket.bitrate))
     {
         Logger::LogToFile("[sv:inf:plugin:packet:init] : failed init record");
     }
@@ -298,288 +294,268 @@ bool Plugin::PluginInitHandler(const SV::PluginInitPacket& plugin_data)
     return true;
 }
 
-void Plugin::ControlPacketHandler(const ControlPacket& control_packet)
+void Plugin::ControlPacketHandler(const ControlPacket& controlPacket)
 {
-    switch (control_packet.packet)
+    switch (controlPacket.packet)
     {
         case SV::ControlPacketType::muteEnable:
         {
-            if (control_packet.length != 0) break;
+            if (controlPacket.length != 0) break;
 
             Logger::LogToFile("[sv:dbg:plugin:muteenable]");
 
-            _mute_status   = true;
-            _record_status = false;
-            _record_busy   = false;
+            Plugin::muteStatus = true;
+            Plugin::recordStatus = false;
+            Plugin::recordBusy = false;
 
             KeyFilter::ReleaseAllKeys();
-        }
-        break;
+        } break;
         case SV::ControlPacketType::muteDisable:
         {
-            if (control_packet.length != 0) break;
+            if (controlPacket.length != 0) break;
 
             Logger::LogToFile("[sv:dbg:plugin:mutedisable]");
 
-            _mute_status = false;
-        }
-        break;
+            Plugin::muteStatus = false;
+        } break;
         case SV::ControlPacketType::startRecord:
         {
-            if (control_packet.length != 0) break;
+            if (controlPacket.length != 0) break;
 
             Logger::LogToFile("[sv:dbg:plugin:startrecord]");
 
-            if (_mute_status) break;
+            if (Plugin::muteStatus) break;
 
-            _record_busy   = true;
-            _record_status = true;
+            Plugin::recordBusy = true;
+            Plugin::recordStatus = true;
 
             Record::StartRecording();
-        }
-        break;
+        } break;
         case SV::ControlPacketType::stopRecord:
         {
-            if (control_packet.length != 0) break;
+            if (controlPacket.length != 0) break;
 
             Logger::LogToFile("[sv:dbg:plugin:stoprecord]");
 
-            if (_mute_status) break;
+            if (Plugin::muteStatus) break;
 
-            _record_status = false;
-            _record_busy   = false;
-        }
-        break;
+            Plugin::recordStatus = false;
+            Plugin::recordBusy = false;
+        } break;
         case SV::ControlPacketType::addKey:
         {
-            const auto& content = *reinterpret_cast<const SV::AddKeyPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::AddKeyPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
-            Logger::LogToFile("[sv:dbg:plugin:addkey] : keyid(0x%hhx)", content.keyId);
+            Logger::LogToFile("[sv:dbg:plugin:addkey] : keyid(0x%hhx)", stData.keyId);
 
-            KeyFilter::AddKey(content.keyId);
-        }
-        break;
+            KeyFilter::AddKey(stData.keyId);
+        } break;
         case SV::ControlPacketType::removeKey:
         {
-            const auto& content = *reinterpret_cast<const SV::RemoveKeyPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::RemoveKeyPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
-            Logger::LogToFile("[sv:dbg:plugin:removekey] : keyid(0x%hhx)", content.keyId);
+            Logger::LogToFile("[sv:dbg:plugin:removekey] : keyid(0x%hhx)", stData.keyId);
 
-            KeyFilter::RemoveKey(content.keyId);
-        }
-        break;
+            KeyFilter::RemoveKey(stData.keyId);
+        } break;
         case SV::ControlPacketType::removeAllKeys:
         {
-            if (control_packet.length) break;
+            if (controlPacket.length) break;
 
             Logger::LogToFile("[sv:dbg:plugin:removeallkeys]");
 
             KeyFilter::RemoveAllKeys();
-        }
-        break;
+        } break;
         case SV::ControlPacketType::createGStream:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateGStreamPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateGStreamPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:creategstream] : stream(%p), color(0x%x), name(%s)",
-                content.stream, content.color, content.color ? content.name : "");
+                stData.stream, stData.color, stData.color ? stData.name : "");
 
-            const auto& streamPtr = _stream_table[content.stream] =
-                GlobalStream(content.color, content.name);
+            const auto& streamPtr = Plugin::streamTable[stData.stream] =
+                MakeGlobalStream(stData.color, stData.name);
 
             streamPtr->AddPlayCallback(SpeakerList::OnSpeakerPlay);
             streamPtr->AddStopCallback(SpeakerList::OnSpeakerStop);
-        }
-        break;
+        } break;
         case SV::ControlPacketType::createLPStream:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateLPStreamPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateLPStreamPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:createlpstream] : "
                 "stream(%p), dist(%.2f), pos(%.2f;%.2f;%.2f), color(0x%x), name(%s)",
-                content.stream, content.distance, content.position.x, content.position.y, content.position.z,
-                content.color, content.color ? content.name : "");
+                stData.stream, stData.distance, stData.position.x, stData.position.y, stData.position.z,
+                stData.color, stData.color ? stData.name : "");
 
-            const auto& streamPtr = _stream_table[content.stream] =
-                MakeStreamAtPoint(content.color, content.name, content.distance, content.position);
+            const auto& streamPtr = Plugin::streamTable[stData.stream] =
+                MakeStreamAtPoint(stData.color, stData.name, stData.distance, stData.position);
 
             streamPtr->AddPlayCallback(SpeakerList::OnSpeakerPlay);
             streamPtr->AddStopCallback(SpeakerList::OnSpeakerStop);
-        }
-        break;
+        } break;
         case SV::ControlPacketType::createLStreamAtVehicle:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:createlstreamatvehicle] : "
                 "stream(%p), dist(%.2f), vehicle(%hu), color(0x%x), name(%s)",
-                content.stream, content.distance, content.target,
-                content.color, content.color ? content.name : "");
+                stData.stream, stData.distance, stData.target,
+                stData.color, stData.color ? stData.name : "");
 
-            const auto& streamPtr = _stream_table[content.stream] =
-                MakeStreamAtVehicle(content.color, content.name, content.distance, content.target);
+            const auto& streamPtr = Plugin::streamTable[stData.stream] =
+                MakeStreamAtVehicle(stData.color, stData.name, stData.distance, stData.target);
 
             streamPtr->AddPlayCallback(SpeakerList::OnSpeakerPlay);
             streamPtr->AddStopCallback(SpeakerList::OnSpeakerStop);
-        }
-        break;
+        } break;
         case SV::ControlPacketType::createLStreamAtPlayer:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:createlstreamatplayer] : "
                 "stream(%p), dist(%.2f), player(%hu), color(0x%x), name(%s)",
-                content.stream, content.distance, content.target,
-                content.color, content.color ? content.name : "");
+                stData.stream, stData.distance, stData.target,
+                stData.color, stData.color ? stData.name : "");
 
-            const auto& streamPtr = _stream_table[content.stream] =
-                MakeStreamAtPlayer(content.color, content.name, content.distance, content.target);
+            const auto& streamPtr = Plugin::streamTable[stData.stream] =
+                MakeStreamAtPlayer(stData.color, stData.name, stData.distance, stData.target);
 
             streamPtr->AddPlayCallback(SpeakerList::OnSpeakerPlay);
             streamPtr->AddStopCallback(SpeakerList::OnSpeakerStop);
-        }
-        break;
+        } break;
         case SV::ControlPacketType::createLStreamAtObject:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateLStreamAtPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:createlstreamatobject] : "
                 "stream(%p), dist(%.2f), object(%hu), color(0x%x), name(%s)",
-                content.stream, content.distance, content.target,
-                content.color, content.color ? content.name : "");
+                stData.stream, stData.distance, stData.target,
+                stData.color, stData.color ? stData.name : "");
 
-            const auto& streamPtr = _stream_table[content.stream] =
-                MakeStreamAtObject(content.color, content.name, content.distance, content.target);
+            const auto& streamPtr = Plugin::streamTable[stData.stream] =
+                MakeStreamAtObject(stData.color, stData.name, stData.distance, stData.target);
 
             streamPtr->AddPlayCallback(SpeakerList::OnSpeakerPlay);
             streamPtr->AddStopCallback(SpeakerList::OnSpeakerStop);
-        }
-        break;
+        } break;
         case SV::ControlPacketType::updateLStreamDistance:
         {
-            const auto& content = *reinterpret_cast<const SV::UpdateLStreamDistancePacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::UpdateLStreamDistancePacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:updatelpstreamdistance] : stream(%p), dist(%.2f)",
-                content.stream, content.distance);
+                stData.stream, stData.distance);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            static_cast<LocalStream*>(iter->second.get())->SetDistance(content.distance);
-        }
-        break;
+            static_cast<LocalStream*>(iter->second.get())->SetDistance(stData.distance);
+        } break;
         case SV::ControlPacketType::updateLPStreamPosition:
         {
-            const auto& content = *reinterpret_cast<const SV::UpdateLPStreamPositionPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::UpdateLPStreamPositionPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:updatelpstreamcoords] : stream(%p), pos(%.2f;%.2f;%.2f)",
-                content.stream, content.position.x, content.position.y, content.position.z);
+                stData.stream, stData.position.x, stData.position.y, stData.position.z);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            static_cast<StreamAtPoint*>(iter->second.get())->SetPosition(content.position);
-        }
-        break;
+            static_cast<StreamAtPoint*>(iter->second.get())->SetPosition(stData.position);
+        } break;
         case SV::ControlPacketType::deleteStream:
         {
-            const auto& content = *reinterpret_cast<const SV::DeleteStreamPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::DeleteStreamPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
-            Logger::LogToFile("[sv:dbg:plugin:deletestream] : stream(%p)", content.stream);
+            Logger::LogToFile("[sv:dbg:plugin:deletestream] : stream(%p)", stData.stream);
 
-            _stream_table.erase(content.stream);
-        }
-        break;
+            Plugin::streamTable.erase(stData.stream);
+        } break;
         case SV::ControlPacketType::setStreamParameter:
         {
-            const auto& content = *reinterpret_cast<const SV::SetStreamParameterPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::SetStreamParameterPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:streamsetparameter] : stream(%p), parameter(%hhu), value(%.2f)",
-                content.stream, content.parameter, content.value);
+                stData.stream, stData.parameter, stData.value);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            iter->second->SetParameter(content.parameter, content.value);
-        }
-        break;
+            iter->second->SetParameter(stData.parameter, stData.value);
+        } break;
         case SV::ControlPacketType::slideStreamParameter:
         {
-            const auto& content = *reinterpret_cast<const SV::SlideStreamParameterPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::SlideStreamParameterPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:streamslideparameter] : "
                 "stream(%p), parameter(%hhu), startvalue(%.2f), endvalue(%.2f), time(%u)",
-                content.stream, content.parameter, content.startvalue, content.endvalue, content.time);
+                stData.stream, stData.parameter, stData.startvalue, stData.endvalue, stData.time);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            iter->second->SlideParameter(content.parameter, content.startvalue, content.endvalue, content.time);
-        }
-        break;
+            iter->second->SlideParameter(stData.parameter, stData.startvalue, stData.endvalue, stData.time);
+        } break;
         case SV::ControlPacketType::createEffect:
         {
-            const auto& content = *reinterpret_cast<const SV::CreateEffectPacket*>(control_packet.data);
-            if (control_packet.length < sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::CreateEffectPacket*>(controlPacket.data);
+            if (controlPacket.length < sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:effectcreate] : "
                 "stream(%p), effect(%p), number(%hhu), priority(%d)",
-                content.stream, content.effect, content.number, content.priority);
+                stData.stream, stData.effect, stData.number, stData.priority);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            iter->second->EffectCreate(content.effect, content.number, content.priority,
-                content.params, control_packet.length - sizeof(content));
-        }
-        break;
+            iter->second->EffectCreate(stData.effect, stData.number, stData.priority,
+                stData.params, controlPacket.length - sizeof(stData));
+        } break;
         case SV::ControlPacketType::deleteEffect:
         {
-            const auto& content = *reinterpret_cast<const SV::DeleteEffectPacket*>(control_packet.data);
-            if (control_packet.length != sizeof(content)) break;
+            const auto& stData = *reinterpret_cast<const SV::DeleteEffectPacket*>(controlPacket.data);
+            if (controlPacket.length != sizeof(stData)) break;
 
             Logger::LogToFile("[sv:dbg:plugin:effectdelete] : stream(%p), effect(%p)",
-                content.stream, content.effect);
+                stData.stream, stData.effect);
 
-            const auto iter = _stream_table.find(content.stream);
-            if (iter == _stream_table.end()) break;
+            const auto iter = Plugin::streamTable.find(stData.stream);
+            if (iter == Plugin::streamTable.end()) break;
 
-            iter->second->EffectDelete(content.effect);
-        }
-        break;
+            iter->second->EffectDelete(stData.effect);
+        } break;
     }
 }
 
 void Plugin::DisconnectHandler()
 {
-    _stream_table.clear();
+    Plugin::streamTable.clear();
 
-    _mute_status = false;
-    _record_status = false;
-    _record_busy = false;
+    Plugin::muteStatus = false;
+    Plugin::recordStatus = false;
+    Plugin::recordBusy = false;
 
-    if (!BlackList::Save(_blacklist_file_path))
-    {
+    if (!BlackList::Save(Plugin::blacklistFilePath))
         Logger::LogToFile("[sv:err:plugin] : failed to save blacklist file");
-    }
 
     BlackList::Free();
     Record::Free();
 }
 
-LRESULT CALLBACK Plugin::WindowProc(const HWND hWnd, const UINT uMsg, const WPARAM wParam, const LPARAM lParam)
+LRESULT CALLBACK Plugin::WindowProc(const HWND hWnd,
+    const UINT uMsg, const WPARAM wParam, const LPARAM lParam)
 {
     if (PluginMenu::WindowProc(hWnd, uMsg, wParam, lParam))
         return TRUE;
@@ -590,34 +566,39 @@ LRESULT CALLBACK Plugin::WindowProc(const HWND hWnd, const UINT uMsg, const WPAR
         case WM_KEYUP: KeyFilter::PushReleaseEvent(static_cast<BYTE>(wParam)); break;
     }
 
-    return CallWindowProc(reinterpret_cast<WNDPROC>(_orig_wnd_proc), hWnd, uMsg, wParam, lParam);
+    return CallWindowProc(reinterpret_cast<WNDPROC>
+        (Plugin::origWndProc), hWnd, uMsg, wParam, lParam);
 }
 
-void Plugin::OnDeviceInit(IDirect3D9* const, IDirect3DDevice9* const device, const D3DPRESENT_PARAMETERS& parameters)
+void Plugin::OnDeviceInit(IDirect3D9* const pDirect,
+                          IDirect3DDevice9* const pDevice,
+                          const D3DPRESENT_PARAMETERS& dParameters)
 {
-    assert(device != nullptr);
+    assert(pDirect);
+    assert(pDevice);
 
-    MicroIcon::Init(device,
-        { _module, PassiveMicroIconResource },
-        { _module, ActiveMicroIconResource },
-        { _module, MutedMicroIconResource });
+    MicroIcon::Init(pDevice,
+        Resource(Plugin::pModuleHandle, PassiveMicroIconResource),
+        Resource(Plugin::pModuleHandle, ActiveMicroIconResource),
+        Resource(Plugin::pModuleHandle, MutedMicroIconResource));
 
-    ImGuiUtil::Init(device);
+    ImGuiUtil::Init(pDevice);
 
-    SpeakerList::Init(device, _addresses,
-        { _module, SpeakerIconResource },
-        { _module, FontResource });
+    SpeakerList::Init(pDevice, *Plugin::pAddresses,
+        Resource(Plugin::pModuleHandle, SpeakerIconResource),
+        Resource(Plugin::pModuleHandle, FontResource));
 
-    PluginMenu::Init(device, _addresses,
-        { _module, BlurShaderResource },
-        { _module, LogoIconResource },
-        { _module, FontResource });
+    PluginMenu::Init(pDevice, *Plugin::pAddresses,
+        Resource(Plugin::pModuleHandle, BlurShaderResource),
+        Resource(Plugin::pModuleHandle, LogoIconResource),
+        Resource(Plugin::pModuleHandle, FontResource));
 
-    _orig_wnd_handle = parameters.hDeviceWindow;
-    _orig_wnd_proc = GetWindowLong(_orig_wnd_handle, GWL_WNDPROC);
-    SetWindowLong(_orig_wnd_handle, GWL_WNDPROC, reinterpret_cast<LONG>(&WindowProc));
+    Plugin::origWndHandle = dParameters.hDeviceWindow;
+    Plugin::origWndProc = GetWindowLong(Plugin::origWndHandle, GWL_WNDPROC);
+    SetWindowLong(Plugin::origWndHandle, GWL_WNDPROC,
+        reinterpret_cast<LONG>(&Plugin::WindowProc));
 
-    _game_status = GameUtil::IsGameActive();
+    Plugin::gameStatus = GameUtil::IsGameActive();
 }
 
 void Plugin::OnBeforeReset()
@@ -631,38 +612,39 @@ void Plugin::OnBeforeReset()
 void Plugin::OnRender()
 {
     Timer::Tick();
-    MainLoop();
+    Plugin::MainLoop();
     MicroIcon::Update();
     PluginMenu::Update();
     PluginMenu::Render();
 }
 
-void Plugin::OnAfterReset(IDirect3DDevice9* const device, const D3DPRESENT_PARAMETERS&)
+void Plugin::OnAfterReset(IDirect3DDevice9* const pDevice,
+                          const D3DPRESENT_PARAMETERS& dParameters)
 {
-    assert(device != nullptr);
+    assert(pDevice);
 
-    MicroIcon::Init(device,
-        { _module, PassiveMicroIconResource },
-        { _module, ActiveMicroIconResource },
-        { _module, MutedMicroIconResource });
+    MicroIcon::Init(pDevice,
+        Resource(Plugin::pModuleHandle, PassiveMicroIconResource),
+        Resource(Plugin::pModuleHandle, ActiveMicroIconResource),
+        Resource(Plugin::pModuleHandle, MutedMicroIconResource));
 
-    ImGuiUtil::Init(device);
+    ImGuiUtil::Init(pDevice);
 
-    SpeakerList::Init(device, _addresses,
-        { _module, SpeakerIconResource },
-        { _module, FontResource });
+    SpeakerList::Init(pDevice, *Plugin::pAddresses,
+        Resource(Plugin::pModuleHandle, SpeakerIconResource),
+        Resource(Plugin::pModuleHandle, FontResource));
 
-    PluginMenu::Init(device, _addresses,
-        { _module, BlurShaderResource },
-        { _module, LogoIconResource },
-        { _module, FontResource });
+    PluginMenu::Init(pDevice, *Plugin::pAddresses,
+        Resource(Plugin::pModuleHandle, BlurShaderResource),
+        Resource(Plugin::pModuleHandle, LogoIconResource),
+        Resource(Plugin::pModuleHandle, FontResource));
 
-    _game_status = GameUtil::IsGameActive();
+    Plugin::gameStatus = GameUtil::IsGameActive();
 }
 
 void Plugin::OnDeviceFree()
 {
-    SetWindowLong(_orig_wnd_handle, GWL_WNDPROC, _orig_wnd_proc);
+    SetWindowLong(Plugin::origWndHandle, GWL_WNDPROC, Plugin::origWndProc);
 
     PluginMenu::Free();
     SpeakerList::Free();
@@ -672,26 +654,24 @@ void Plugin::OnDeviceFree()
 
 void Plugin::DrawRadarHook()
 {
-    static_cast<void(*)()>(_draw_radar_hook->GetCallFuncAddr())();
+    static_cast<void(*)()>(Plugin::drawRadarHook->callFuncAddr)();
 
     SpeakerList::Render();
     MicroIcon::Render();
 }
 
-HMODULE       Plugin::_module = NULL;
-AddressesBase Plugin::_addresses;
-std::string   Plugin::_sv_directory;
+HMODULE Plugin::pModuleHandle { NULL };
+AddressesBasePtr Plugin::pAddresses { nullptr };
 
-bool Plugin::_mute_status = false;
-bool Plugin::_record_status = false;
-bool Plugin::_record_busy = false;
+bool Plugin::muteStatus { false };
+bool Plugin::recordStatus { false };
+bool Plugin::recordBusy { false };
 
-std::map<DWORD, std::unique_ptr<Stream>>
-            Plugin::_stream_table;
-std::string Plugin::_blacklist_file_path;
-bool        Plugin::_game_status = false;
+std::map<DWORD, StreamPtr> Plugin::streamTable;
+std::string Plugin::blacklistFilePath;
+bool Plugin::gameStatus { false };
 
-LONG Plugin::_orig_wnd_proc = NULL;
-HWND Plugin::_orig_wnd_handle = NULL;
+LONG Plugin::origWndProc { NULL };
+HWND Plugin::origWndHandle { NULL };
 
-Memory::CallHook Plugin::_draw_radar_hook;
+Memory::CallHookPtr Plugin::drawRadarHook { nullptr };

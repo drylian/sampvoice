@@ -9,55 +9,45 @@
 
 #include "Resource.h"
 
-#include <cassert>
-
 #include "Logger.h"
 
-Resource::Resource(const HMODULE module, const DWORD id, const LPCSTR type) noexcept
+Resource::Resource(const HMODULE hModule, const DWORD rId, const LPCSTR rType)
 {
-    const auto rsrc = FindResource(module, MAKEINTRESOURCE(id), type);
-    if (rsrc == nullptr)
+    const auto hRsrc = FindResource(hModule, MAKEINTRESOURCE(rId), rType);
+    if (hRsrc == nullptr)
     {
         Logger::LogToFile("[err:resource] : failed to find resource (code:%u)", GetLastError());
-        return;
+        throw std::exception();
     }
 
-    const auto global = LoadResource(module, rsrc);
-    if (global == nullptr)
+    const auto hGlobal = LoadResource(hModule, hRsrc);
+    if (hGlobal == nullptr)
     {
         Logger::LogToFile("[err:resource] : failed to load resource (code:%u)", GetLastError());
-        return;
+        throw std::exception();
     }
 
-    _data = LockResource(global);
-    if (_data == nullptr)
+    this->dataPtr = LockResource(hGlobal);
+    if (this->dataPtr == nullptr)
     {
         Logger::LogToFile("[err:resource] : failed to get data pointer (code:%u)", GetLastError());
-        return;
+        throw std::exception();
     }
 
-    _size = SizeofResource(module, rsrc);
-    if (_size == 0)
+    this->dataSize = SizeofResource(hModule, hRsrc);
+    if (this->dataSize == 0)
     {
         Logger::LogToFile("[err:resource] : failed to get data size (code:%u)", GetLastError());
-        _data = nullptr;
-        return;
+        throw std::exception();
     }
 }
 
-bool Resource::Valid() const noexcept
+LPVOID Resource::GetDataPtr() const noexcept
 {
-    return _data != nullptr && _size != 0;
+    return this->dataPtr;
 }
 
-LPVOID Resource::GetData() const noexcept
+DWORD Resource::GetDataSize() const noexcept
 {
-    assert(_data != nullptr);
-    return _data;
-}
-
-DWORD Resource::GetSize() const noexcept
-{
-    assert(_size != 0);
-    return _size;
+    return this->dataSize;
 }

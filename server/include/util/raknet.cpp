@@ -13,9 +13,9 @@
 
 namespace
 {
-    constexpr uint8_t kConnectRaknetRcpId = 25;
+    constexpr uint8_t ConnectRaknetRcpId = 25;
 
-    constexpr const char* kGetRakServerInterfaceFuncPattern =
+    constexpr const char* GetRakServerInterfaceFuncPattern =
 #ifdef _WIN32
         "\x64\xA1\x00\x00\x00\x00\x50\x64\x89\x25\x00\x00\x00\x00\x51"
         "\x68\x18\x0E\x00\x00\xE8\xFF\xFF\xFF\xFF\x83\xC4\x04\x89\x04"
@@ -27,7 +27,7 @@ namespace
 #endif
         ;
 
-    constexpr const char* kGetRakServerInterfaceFuncMask =
+    constexpr const char* GetRakServerInterfaceFuncMask =
 #ifdef _WIN32
         "xxxxxxxxxxxxxxxx????x????xxxxxxxxxxx?xxxxxx"
 #else
@@ -35,7 +35,7 @@ namespace
 #endif
         ;
 
-    constexpr auto kOnPlayerDisconnectAddr =
+    constexpr auto OnPlayerDisconnectAddr =
 #ifdef _WIN32
         0x046D970
 #else
@@ -48,367 +48,448 @@ namespace
         enum
         {
 #ifdef _WIN32
-            Start                = 1,
-            Send                 = 7,
-            Receive              = 10,
-            Kick                 = 11,
-            DeallocatePacket     = 12,
-            SetAllowedPlayers    = 13,
-            GetLastPing          = 19,
-            RegisterRpc          = 29,
-            UnregisterRpc        = 31,
-            Rpc                  = 32,
-            GetLocalIp           = 52,
-            GetInternalId        = 53,
+            Start = 1,
+            Send = 7,
+            Receive = 10,
+            Kick = 11,
+            DeallocatePacket = 12,
+            SetAllowedPlayers = 13,
+            GetLastPing = 19,
+            RegisterRpc = 29,
+            UnregisterRpc = 31,
+            Rpc = 32,
+            GetLocalIp = 52,
+            GetInternalId = 53,
             GetIndexFromPlayerId = 57,
             GetPlayerIdFromIndex = 58,
-            AddBan               = 60,
-            RemoveBan            = 61,
-            ClearBan             = 62,
-            SetTimeout           = 65
+            AddBan = 60,
+            RemoveBan = 61,
+            ClearBan = 62,
+            SetTimeout = 65
 #else
-            Start                = 2,
-            Send                 = 9,
-            Receive              = 11,
-            Kick                 = 12,
-            DeallocatePacket     = 13,
-            SetAllowedPlayers    = 14,
-            GetLastPing          = 20,
-            RegisterRpc          = 30,
-            UnregisterRpc        = 32,
-            Rpc                  = 35,
-            GetLocalIp           = 53,
-            GetInternalId        = 54,
+            Start = 2,
+            Send = 9,
+            Receive = 11,
+            Kick = 12,
+            DeallocatePacket = 13,
+            SetAllowedPlayers = 14,
+            GetLastPing = 20,
+            RegisterRpc = 30,
+            UnregisterRpc = 32,
+            Rpc = 35,
+            GetLocalIp = 53,
+            GetInternalId = 54,
             GetIndexFromPlayerId = 58,
             GetPlayerIdFromIndex = 59,
-            AddBan               = 61,
-            RemoveBan            = 62,
-            ClearBan             = 63,
-            SetTimeout           = 65
+            AddBan = 61,
+            RemoveBan = 62,
+            ClearBan = 63,
+            SetTimeout = 65
 #endif
         };
     };
 }
 
-bool RakNet::Init(const void* const server_base_addr) noexcept
+bool RakNet::Init(const void* const serverBaseAddr) noexcept
 {
-    if (_init_status) return false;
+    if (RakNet::initStatus) return false;
 
     Logger::Log("[dbg:raknet:init] : module initializing...");
 
-    void*  module_addr;
-    size_t module_size;
+    Memory::addr_t moduleAddr { nullptr };
+    Memory::size_t moduleSize { 0 };
 
-    if (!Memory::GetModuleInfo(server_base_addr, module_addr, module_size))
+    if (!Memory::GetModuleInfo(serverBaseAddr, moduleAddr, moduleSize))
     {
         Logger::Log("[err:raknet:init] : failed to get module info");
         return false;
     }
 
-    const auto function_ptr = Memory::Scanner(module_addr, module_size).Find
-        (kGetRakServerInterfaceFuncPattern, kGetRakServerInterfaceFuncMask);
-    if (function_ptr == nullptr)
+    const auto functionPointer = Memory::Scanner(moduleAddr, moduleSize).Find(GetRakServerInterfaceFuncPattern,
+                                                                              GetRakServerInterfaceFuncMask);
+
+    if (functionPointer == nullptr)
     {
         Logger::Log("[err:raknet:init] : failed to find 'GetRakServerInterface' function address");
         return false;
     }
 
-    _hook_get_rak_server_interface = { (void*)((size_t)(function_ptr) - 7),
-        (void*)(GetRakServerInterfaceHook) };
-    _hook_disconnect = { (void*)(kOnPlayerDisconnectAddr),
-        (void*)(DisconnectHook) };
+    try
+    {
+        RakNet::hookGetRakServerInterface = MakeJumpHook(static_cast<uint8_t*>(functionPointer) - 7,
+                                                         RakNet::GetRakServerInterfaceHook);
+        RakNet::hookDisconnect = MakeJumpHook(OnPlayerDisconnectAddr, RakNet::DisconnectHook);
+    }
+    catch (const std::exception& exception)
+    {
+        Logger::Log("[err:raknet:init] : failed to create function hooks");
+        RakNet::hookGetRakServerInterface.reset();
+        RakNet::hookDisconnect.reset();
+        return false;
+    }
 
-    _load_status = false;
+    RakNet::loadStatus = false;
 
     Logger::Log("[dbg:raknet:init] : module initialized");
 
-    _init_status = true;
+    RakNet::initStatus = true;
 
     return true;
 }
 
 void RakNet::Free() noexcept
 {
-    if (_init_status)
+    if (!RakNet::initStatus) return;
+
+    Logger::Log("[dbg:raknet:free] : module releasing...");
+
+    if (RakNet::loadStatus)
     {
-        Logger::Log("[dbg:raknet:free] : module releasing...");
+        const auto vTable = *static_cast<void***>(RakNet::pRakServerInterface);
 
-        if (_load_status)
+        if (RakNet::origConnectHandler != nullptr)
         {
-            const auto vtable = *static_cast<void***>(_rak_server_interface);
-
-            if (_orig_connect_handler != nullptr)
-            {
-                const uint8_t rpc_connect_id = kConnectRaknetRcpId;
-                UnregisterRpc(&rpc_connect_id);
-                RegisterRpc(&rpc_connect_id, _orig_connect_handler);
-            }
-
-            _orig_connect_handler = nullptr;
-
-            {
-                const Memory::UnprotectScope<sizeof(*vtable)> scope { vtable + FunctionOffset::RegisterRpc };
-                vtable[FunctionOffset::RegisterRpc] = reinterpret_cast<void*>(_func_rpc);
-            } {
-                const Memory::UnprotectScope<sizeof(*vtable)> scope { vtable + FunctionOffset::Receive };
-                vtable[FunctionOffset::Receive] = reinterpret_cast<void*>(_func_receive);
-            } {
-                _func_start                    = nullptr;
-                _func_send                     = nullptr;
-                _func_receive                  = nullptr;
-                _func_kick                     = nullptr;
-                _func_deallocate_packet        = nullptr;
-                _func_set_allowed_players      = nullptr;
-                _func_get_last_ping            = nullptr;
-                _func_register_as_rpc          = nullptr;
-                _func_unregister_as_rpc        = nullptr;
-                _func_rpc                      = nullptr;
-                _func_get_local_ip             = nullptr;
-                _func_get_index_from_player_id = nullptr;
-                _func_get_player_id_from_index = nullptr;
-                _func_add_to_ban_list          = nullptr;
-                _func_remove_from_ban_list     = nullptr;
-                _func_clear_ban_list           = nullptr;
-                _func_set_timeout_time         = nullptr;
-            }
-
-            _rak_server_interface = nullptr;
+            const uint8_t rpcConnectId { ConnectRaknetRcpId };
+            RakNet::UnregisterRpc(&rpcConnectId);
+            RakNet::RegisterRpc(&rpcConnectId, RakNet::origConnectHandler);
         }
 
-        _load_status = false;
+        RakNet::origConnectHandler = nullptr;
 
-        for (uint16_t player_id = 0; player_id < MAX_PLAYERS; ++player_id)
         {
-            if (_player_status[player_id])
-            {
-                if (_disconnect_callback != nullptr)
-                {
-                    _disconnect_callback(player_id);
-                }
-            }
-
-            _player_status[player_id] = false;
+            const Memory::UnprotectScope scope { &vTable[FunctionOffset::RegisterRpc], sizeof(void*) };
+            vTable[FunctionOffset::RegisterRpc] = reinterpret_cast<void*>(RakNet::rpcFunc);
+        }
+        
+        {
+            const Memory::UnprotectScope scope { &vTable[FunctionOffset::Receive], sizeof(void*) };
+            vTable[FunctionOffset::Receive] = reinterpret_cast<void*>(RakNet::receiveFunc);
         }
 
-        _connect_callback    = nullptr;
-        _packet_callback     = nullptr;
-        _disconnect_callback = nullptr;
+        RakNet::startFunc = nullptr;
+        RakNet::sendFunc = nullptr;
+        RakNet::receiveFunc = nullptr;
+        RakNet::kickFunc = nullptr;
+        RakNet::deallocatePacketFunc = nullptr;
+        RakNet::setAllowedPlayersFunc = nullptr;
+        RakNet::getLastPingFunc = nullptr;
+        RakNet::registerAsRpcFunc = nullptr;
+        RakNet::unregisterAsRpcFunc = nullptr;
+        RakNet::rpcFunc = nullptr;
+        RakNet::getLocalIpFunc = nullptr;
+        RakNet::getIndexFromPlayerIdFunc = nullptr;
+        RakNet::getPlayerIdFromIndexFunc = nullptr;
+        RakNet::addToBanListFunc = nullptr;
+        RakNet::removeFromBanListFunc = nullptr;
+        RakNet::clearBanListFunc = nullptr;
+        RakNet::setTimeoutTimeFunc = nullptr;
 
-        _hook_disconnect               = {};
-        _hook_get_rak_server_interface = {};
-
-        Logger::Log("[dbg:raknet:free] : module released");
-
-        _init_status = false;
+        RakNet::pRakServerInterface = nullptr;
     }
+
+    RakNet::loadStatus = false;
+
+    for (uint16_t playerId { 0 }; playerId < MAX_PLAYERS; ++playerId)
+    {
+        if (RakNet::playerStatus[playerId])
+        {
+            for (const auto& disconnectCallback : RakNet::disconnectCallbacks)
+            {
+                if (disconnectCallback != nullptr) disconnectCallback(playerId);
+            }
+        }
+
+        RakNet::playerStatus[playerId] = false;
+    }
+
+    RakNet::connectCallbacks.clear();
+    RakNet::packetCallbacks.clear();
+    RakNet::disconnectCallbacks.clear();
+
+    RakNet::hookDisconnect.reset();
+    RakNet::hookGetRakServerInterface.reset();
+
+    Logger::Log("[dbg:raknet:free] : module released");
+
+    RakNet::initStatus = false;
 }
 
 bool RakNet::IsLoaded() noexcept
 {
-    return _load_status;
+    return RakNet::loadStatus;
 }
 
 void RakNet::Process() noexcept
 {
     // Rpc's sending...
     {
-        const std::unique_lock lock { _rpc_queue_mutex };
+        const std::unique_lock<std::shared_mutex> lock { RakNet::rpcQueueMutex };
 
-        for (SendRpcInfo send_rpc_info; _rpc_queue.try_pop(send_rpc_info);)
-        {
-            Rpc(&send_rpc_info.rpc_id, send_rpc_info.bit_stream.get(), PacketPriority::MEDIUM_PRIORITY,
-                PacketReliability::RELIABLE_ORDERED, '\0', GetPlayerIdFromIndex(send_rpc_info.player_id),
-                send_rpc_info.player_id == 0xffff, false);
-        }
+        SendRpcInfo sendRpcInfo;
+        
+        while (RakNet::rpcQueue.try_pop(sendRpcInfo)) RakNet::Rpc(
+            &sendRpcInfo.rpcId, sendRpcInfo.bitStream.get(), PacketPriority::MEDIUM_PRIORITY,
+            PacketReliability::RELIABLE_ORDERED, '\0', RakNet::GetPlayerIdFromIndex(sendRpcInfo.playerId),
+            sendRpcInfo.playerId == 0xffff, false);
     }
 
     // Packets sending...
     {
-        const std::unique_lock lock { _packet_queue_mutex };
+        const std::unique_lock<std::shared_mutex> lock { RakNet::packetQueueMutex };
 
-        for (SendPacketInfo send_packet_info; _packet_queue.try_pop(send_packet_info);)
-        {
-            Send(send_packet_info.bit_stream.get(), PacketPriority::MEDIUM_PRIORITY,
-                PacketReliability::RELIABLE_ORDERED, '\0',
-                GetPlayerIdFromIndex(send_packet_info.player_id),
-                send_packet_info.player_id == 0xffff);
-        }
+        SendPacketInfo sendPacketInfo;
+        
+        while (RakNet::packetQueue.try_pop(sendPacketInfo)) RakNet::Send(
+            sendPacketInfo.bitStream.get(), PacketPriority::MEDIUM_PRIORITY, PacketReliability::RELIABLE_ORDERED,
+            '\0', RakNet::GetPlayerIdFromIndex(sendPacketInfo.playerId), sendPacketInfo.playerId == 0xffff);
     }
 
     // Kicking players...
     {
-        const std::unique_lock lock { _kick_queue_mutex };
+        const std::unique_lock<std::shared_mutex> lock { RakNet::kickQueueMutex };
 
-        for (uint16_t kick_player_id; _kick_queue.try_pop(kick_player_id);)
-        {
-            Kick(GetPlayerIdFromIndex(kick_player_id));
-        }
+        uint16_t kickPlayerId;
+        
+        while (RakNet::kickQueue.try_pop(kickPlayerId))
+            RakNet::Kick(RakNet::GetPlayerIdFromIndex(kickPlayerId));
     }
 }
 
-bool RakNet::SendRPC(const uint8_t rpc_id, const uint16_t player_id, const void* const data, const int size)
+bool RakNet::SendRPC(const uint8_t rpcId, const uint16_t playerId, const void* const dataPtr, const int dataSize)
 {
-    auto bit_stream = std::make_unique<BitStream>((uint8_t*)(data), size, true);
+    auto bitStream = std::make_unique<BitStream>((uint8_t*)(dataPtr), dataSize, true);
 
-    const std::shared_lock lock { _rpc_queue_mutex };
+    const std::shared_lock<std::shared_mutex> lock { RakNet::rpcQueueMutex };
 
-    return _rpc_queue.try_emplace(std::move(bit_stream), player_id, rpc_id);
+    return RakNet::rpcQueue.try_emplace(std::move(bitStream), playerId, rpcId);
 }
 
-bool RakNet::SendPacket(const uint8_t packet_id, const uint16_t player_id, const void* const data, const int size)
+bool RakNet::SendPacket(const uint8_t packetId, const uint16_t playerId, const void* const dataPtr, const int dataSize)
 {
-    auto bit_stream = std::make_unique<BitStream>(sizeof(packet_id) + size);
+    auto bitStream = std::make_unique<BitStream>(sizeof(packetId) + dataSize);
 
-    bit_stream->Write(packet_id);
-    bit_stream->Write(static_cast<const char*>(data), size);
+    bitStream->Write(packetId);
+    bitStream->Write(static_cast<const char*>(dataPtr), dataSize);
 
-    const std::shared_lock lock { _packet_queue_mutex };
+    const std::shared_lock<std::shared_mutex> lock { RakNet::packetQueueMutex };
 
-    return _packet_queue.try_emplace(std::move(bit_stream), player_id);
+    return RakNet::packetQueue.try_emplace(std::move(bitStream), playerId);
 }
 
-bool RakNet::KickPlayer(const uint16_t player_id) noexcept
+bool RakNet::KickPlayer(const uint16_t playerId) noexcept
 {
-    const std::shared_lock lock { _kick_queue_mutex };
+    const std::shared_lock<std::shared_mutex> lock { RakNet::kickQueueMutex };
 
-    return _kick_queue.try_emplace(player_id);
+    return RakNet::kickQueue.try_emplace(playerId);
 }
 
 // ----------------------------------------------------------------------------
 
-void RakNet::SetConnectCallback(ConnectCallback&& callback) noexcept
+std::size_t RakNet::AddConnectCallback(ConnectCallback callback) noexcept
 {
-    if (_init_status) _connect_callback = std::move(callback);
+    if (!RakNet::initStatus) return -1;
+
+    for (std::size_t i { 0 }; i < RakNet::connectCallbacks.size(); ++i)
+    {
+        if (RakNet::connectCallbacks[i] == nullptr)
+        {
+            RakNet::connectCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
+
+    RakNet::connectCallbacks.emplace_back(std::move(callback));
+    return RakNet::connectCallbacks.size() - 1;
 }
 
-void RakNet::SetPacketCallback(PacketCallback&& callback) noexcept
+std::size_t RakNet::AddPacketCallback(PacketCallback callback) noexcept
 {
-    if (_init_status) _packet_callback = std::move(callback);
+    if (!RakNet::initStatus) return -1;
+
+    for (std::size_t i { 0 }; i < RakNet::packetCallbacks.size(); ++i)
+    {
+        if (RakNet::packetCallbacks[i] == nullptr)
+        {
+            RakNet::packetCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
+
+    RakNet::packetCallbacks.emplace_back(std::move(callback));
+    return RakNet::packetCallbacks.size() - 1;
 }
 
-void RakNet::SetDisconnectCallback(DisconnectCallback&& callback) noexcept
+std::size_t RakNet::AddDisconnectCallback(DisconnectCallback callback) noexcept
 {
-    if (_init_status) _disconnect_callback = std::move(callback);
+    if (!RakNet::initStatus) return -1;
+
+    for (std::size_t i { 0 }; i < RakNet::disconnectCallbacks.size(); ++i)
+    {
+        if (RakNet::disconnectCallbacks[i] == nullptr)
+        {
+            RakNet::disconnectCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
+
+    RakNet::disconnectCallbacks.emplace_back(std::move(callback));
+    return RakNet::disconnectCallbacks.size() - 1;
+}
+
+void RakNet::RemoveConnectCallback(const std::size_t callback) noexcept
+{
+    if (!RakNet::initStatus) return;
+
+    if (callback >= RakNet::connectCallbacks.size())
+        return;
+
+    RakNet::connectCallbacks[callback] = nullptr;
+}
+
+void RakNet::RemovePacketCallback(const std::size_t callback) noexcept
+{
+    if (!RakNet::initStatus) return;
+
+    if (callback >= RakNet::packetCallbacks.size())
+        return;
+
+    RakNet::packetCallbacks[callback] = nullptr;
+}
+
+void RakNet::RemoveDisconnectCallback(const std::size_t callback) noexcept
+{
+    if (!RakNet::initStatus) return;
+
+    if (callback >= RakNet::disconnectCallbacks.size())
+        return;
+
+    RakNet::disconnectCallbacks[callback] = nullptr;
 }
 
 // ----------------------------------------------------------------------------
 
 void* RakNet::GetRakServerInterfaceHook() noexcept
 {
-    _hook_get_rak_server_interface.Disable();
-    const auto orig_interface = reinterpret_cast<void*(*)()>(_hook_get_rak_server_interface.GetPatch().GetAddr())();
-    _hook_get_rak_server_interface.Enable();
+    RakNet::hookGetRakServerInterface->Disable();
+    const auto pOrigInterface = reinterpret_cast<void*(*)()>(RakNet::hookGetRakServerInterface->GetPatch().memAddr)();
+    RakNet::hookGetRakServerInterface->Enable();
 
-    if (orig_interface != nullptr)
+    if (pOrigInterface != nullptr)
     {
-        const auto vtable = *static_cast<void***>(orig_interface);
+        const auto vTable = *static_cast<void***>(pOrigInterface);
 
-        _func_start                    = reinterpret_cast<StartFuncType>                (vtable[FunctionOffset::Start]);
-        _func_send                     = reinterpret_cast<SendFuncType>                 (vtable[FunctionOffset::Send]);
-        _func_receive                  = reinterpret_cast<ReceiveFuncType>              (vtable[FunctionOffset::Receive]);
-        _func_kick                     = reinterpret_cast<KickFuncType>                 (vtable[FunctionOffset::Kick]);
-        _func_deallocate_packet        = reinterpret_cast<DeallocatePacketFuncType>     (vtable[FunctionOffset::DeallocatePacket]);
-        _func_set_allowed_players      = reinterpret_cast<SetAllowedPlayersFuncType>    (vtable[FunctionOffset::SetAllowedPlayers]);
-        _func_get_last_ping            = reinterpret_cast<GetLastPingFuncType>          (vtable[FunctionOffset::GetLastPing]);
-        _func_register_as_rpc          = reinterpret_cast<RegisterAsRpcFuncType>        (vtable[FunctionOffset::RegisterRpc]);
-        _func_unregister_as_rpc        = reinterpret_cast<UnregisterAsRpcFuncType>      (vtable[FunctionOffset::UnregisterRpc]);
-        _func_rpc                      = reinterpret_cast<RpcFuncType>                  (vtable[FunctionOffset::Rpc]);
-        _func_get_local_ip             = reinterpret_cast<GetLocalIpFuncType>           (vtable[FunctionOffset::GetLocalIp]);
-        _func_get_internal_id          = reinterpret_cast<GetInternalIdFuncType>        (vtable[FunctionOffset::GetInternalId]);
-        _func_get_index_from_player_id = reinterpret_cast<GetIndexFromPlayerIdFuncType> (vtable[FunctionOffset::GetIndexFromPlayerId]);
-        _func_get_player_id_from_index = reinterpret_cast<GetPlayerIdFromIndexFuncType> (vtable[FunctionOffset::GetPlayerIdFromIndex]);
-        _func_add_to_ban_list          = reinterpret_cast<AddToBanListFuncType>         (vtable[FunctionOffset::AddBan]);
-        _func_remove_from_ban_list     = reinterpret_cast<RemoveFromBanListFuncType>    (vtable[FunctionOffset::RemoveBan]);
-        _func_clear_ban_list           = reinterpret_cast<ClearBanListFuncType>         (vtable[FunctionOffset::ClearBan]);
-        _func_set_timeout_time         = reinterpret_cast<SetTimeoutTimeFuncType>       (vtable[FunctionOffset::SetTimeout]);
+        RakNet::startFunc                = reinterpret_cast<StartFuncType>                (vTable[FunctionOffset::Start]);
+        RakNet::sendFunc                 = reinterpret_cast<SendFuncType>                 (vTable[FunctionOffset::Send]);
+        RakNet::receiveFunc              = reinterpret_cast<ReceiveFuncType>              (vTable[FunctionOffset::Receive]);
+        RakNet::kickFunc                 = reinterpret_cast<KickFuncType>                 (vTable[FunctionOffset::Kick]);
+        RakNet::deallocatePacketFunc     = reinterpret_cast<DeallocatePacketFuncType>     (vTable[FunctionOffset::DeallocatePacket]);
+        RakNet::setAllowedPlayersFunc    = reinterpret_cast<SetAllowedPlayersFuncType>    (vTable[FunctionOffset::SetAllowedPlayers]);
+        RakNet::getLastPingFunc          = reinterpret_cast<GetLastPingFuncType>          (vTable[FunctionOffset::GetLastPing]);
+        RakNet::registerAsRpcFunc        = reinterpret_cast<RegisterAsRpcFuncType>        (vTable[FunctionOffset::RegisterRpc]);
+        RakNet::unregisterAsRpcFunc      = reinterpret_cast<UnregisterAsRpcFuncType>      (vTable[FunctionOffset::UnregisterRpc]);
+        RakNet::rpcFunc                  = reinterpret_cast<RpcFuncType>                  (vTable[FunctionOffset::Rpc]);
+        RakNet::getLocalIpFunc           = reinterpret_cast<GetLocalIpFuncType>           (vTable[FunctionOffset::GetLocalIp]);
+        RakNet::getInternalIdFunc        = reinterpret_cast<GetInternalIdFuncType>        (vTable[FunctionOffset::GetInternalId]);
+        RakNet::getIndexFromPlayerIdFunc = reinterpret_cast<GetIndexFromPlayerIdFuncType> (vTable[FunctionOffset::GetIndexFromPlayerId]);
+        RakNet::getPlayerIdFromIndexFunc = reinterpret_cast<GetPlayerIdFromIndexFuncType> (vTable[FunctionOffset::GetPlayerIdFromIndex]);
+        RakNet::addToBanListFunc         = reinterpret_cast<AddToBanListFuncType>         (vTable[FunctionOffset::AddBan]);
+        RakNet::removeFromBanListFunc    = reinterpret_cast<RemoveFromBanListFuncType>    (vTable[FunctionOffset::RemoveBan]);
+        RakNet::clearBanListFunc         = reinterpret_cast<ClearBanListFuncType>         (vTable[FunctionOffset::ClearBan]);
+        RakNet::setTimeoutTimeFunc       = reinterpret_cast<SetTimeoutTimeFuncType>       (vTable[FunctionOffset::SetTimeout]);
 
         {
-            const Memory::UnprotectScope<sizeof(*vtable)> scope { vtable + FunctionOffset::RegisterRpc };
-            vtable[FunctionOffset::RegisterRpc] = reinterpret_cast<void*>(RegisterRpcHook);
-        } {
-            const Memory::UnprotectScope<sizeof(*vtable)> scope { vtable + FunctionOffset::Receive };
-            vtable[FunctionOffset::Receive] = reinterpret_cast<void*>(ReceiveHook);
+            const Memory::UnprotectScope scope { &vTable[FunctionOffset::RegisterRpc], sizeof(void*) };
+            vTable[FunctionOffset::RegisterRpc] = reinterpret_cast<void*>(RakNet::RegisterRpcHook);
         }
 
-        _rak_server_interface = orig_interface;
+        {
+            const Memory::UnprotectScope scope { &vTable[FunctionOffset::Receive], sizeof(void*) };
+            vTable[FunctionOffset::Receive] = reinterpret_cast<void*>(RakNet::ReceiveHook);
+        }
 
-        _load_status = true;
+        RakNet::pRakServerInterface = pOrigInterface;
+        RakNet::loadStatus = true;
     }
 
-    return orig_interface;
+    return pOrigInterface;
 }
 
 void RakNet::ConnectHook(RPCParameters* const rpc) noexcept
 {
-    if (const auto sender = GetIndexFromPlayerId(rpc->sender); sender >= 0 && sender < MAX_PLAYERS)
+    const auto sender = RakNet::GetIndexFromPlayerId(rpc->sender);
+
+    if (sender >= 0 && sender < MAX_PLAYERS)
     {
-        if (_player_status[sender])
+        if (RakNet::playerStatus[sender])
         {
-            if (_disconnect_callback != nullptr)
+            for (const auto& disconnectCallback : RakNet::disconnectCallbacks)
             {
-                _disconnect_callback(sender);
+                if (disconnectCallback != nullptr) disconnectCallback(sender);
             }
         }
 
-        _player_status[sender] = true;
+        RakNet::playerStatus[sender] = true;
 
-        if (_connect_callback != nullptr)
+        for (const auto& connectCallback : RakNet::connectCallbacks)
         {
-            _connect_callback(sender, *rpc);
+            if (connectCallback != nullptr) connectCallback(sender, *rpc);
         }
     }
 
-    _orig_connect_handler(rpc);
+    RakNet::origConnectHandler(rpc);
 }
 
-void THISCALL RakNet::RegisterRpcHook(void* const _this, uint8_t* const rpc_id_ptr, RPCFunction rpc_handler) noexcept
+void THISCALL RakNet::RegisterRpcHook(void* const _this, uint8_t* const rpcIdPointer, RPCFunction rpcHandler) noexcept
 {
-    if (*rpc_id_ptr == kConnectRaknetRcpId)
+    if (*rpcIdPointer == ConnectRaknetRcpId)
     {
-        _orig_connect_handler = rpc_handler;
-        rpc_handler = ConnectHook;
+        RakNet::origConnectHandler = rpcHandler;
+        rpcHandler = RakNet::ConnectHook;
     }
 
-    RegisterRpc(rpc_id_ptr, rpc_handler);
+    RakNet::RegisterRpc(rpcIdPointer, rpcHandler);
 }
 
-int THISCALL RakNet::DisconnectHook(void* const _this, const int player_id, const int reason) noexcept
+int THISCALL RakNet::DisconnectHook(void* const _this, const int playerId, const int reason) noexcept
 {
-    if (player_id >= 0 && player_id < MAX_PLAYERS)
+    if (playerId >= 0 && playerId < MAX_PLAYERS)
     {
-        if (_player_status[player_id])
+        if (RakNet::playerStatus[playerId])
         {
-            if (_disconnect_callback != nullptr)
+            for (const auto& disconnectCallback : RakNet::disconnectCallbacks)
             {
-                _disconnect_callback(player_id);
+                if (disconnectCallback != nullptr) disconnectCallback(playerId);
             }
         }
 
-        _player_status[player_id] = false;
+        RakNet::playerStatus[playerId] = false;
     }
 
-    _hook_disconnect.Disable();
-    const auto result = reinterpret_cast<int(THISCALL*)(void*, int, int)>
-        (_hook_disconnect.GetPatch().GetAddr())(_this, player_id, reason);
-    _hook_disconnect.Enable();
+    RakNet::hookDisconnect->Disable();
+    const auto returnStatus = reinterpret_cast<int(THISCALL*)(void*, int, int)>
+        (RakNet::hookDisconnect->GetPatch().memAddr)(_this, playerId, reason);
+    RakNet::hookDisconnect->Enable();
 
-    return result;
+    return returnStatus;
 }
 
 Packet* THISCALL RakNet::ReceiveHook(void* const _this) noexcept
 {
-    Packet* packet = Receive();
+    Packet* packet;
 
-    if (_packet_callback != nullptr)
+    while ((packet = RakNet::Receive()) != nullptr)
     {
-        while (packet != nullptr)
-        {
-            if (_packet_callback(packet->playerIndex, *packet))
-                break;
+        bool breakStatus { true };
 
-            DeallocatePacket(packet);
-            packet = Receive();
+        for (const auto& packetCallback : RakNet::packetCallbacks)
+        {
+            if (packetCallback != nullptr && !packetCallback(packet->playerIndex, *packet))
+                breakStatus = false;
         }
+
+        if (breakStatus) break;
+
+        RakNet::DeallocatePacket(packet);
     }
 
     return packet;
@@ -416,170 +497,207 @@ Packet* THISCALL RakNet::ReceiveHook(void* const _this) noexcept
 
 // ----------------------------------------------------------------------------
 
-bool RakNet::_init_status = false;
-bool RakNet::_load_status = false;
+bool RakNet::initStatus { false };
+bool RakNet::loadStatus { false };
 
-void* RakNet::_rak_server_interface = nullptr;
+void* RakNet::pRakServerInterface { nullptr };
 
-RakNet::ConnectCallback    RakNet::_connect_callback = nullptr;
-RakNet::PacketCallback     RakNet::_packet_callback = nullptr;
-RakNet::DisconnectCallback RakNet::_disconnect_callback = nullptr;
+std::vector<RakNet::ConnectCallback> RakNet::connectCallbacks;
+std::vector<RakNet::PacketCallback> RakNet::packetCallbacks;
+std::vector<RakNet::DisconnectCallback> RakNet::disconnectCallbacks;
 
-std::array<bool, MAX_PLAYERS> RakNet::_player_status;
+std::array<bool, MAX_PLAYERS> RakNet::playerStatus {};
 
-RPCFunction RakNet::_orig_connect_handler = nullptr;
+RPCFunction RakNet::origConnectHandler { nullptr };
 
-Memory::JumpHook RakNet::_hook_disconnect;
-Memory::JumpHook RakNet::_hook_get_rak_server_interface;
-
-// ----------------------------------------------------------------------------
-
-std::shared_mutex              RakNet::_rpc_queue_mutex;
-MPMCQueue<RakNet::SendRpcInfo> RakNet::_rpc_queue { 16 * MAX_PLAYERS };
-
-std::shared_mutex                 RakNet::_packet_queue_mutex;
-MPMCQueue<RakNet::SendPacketInfo> RakNet::_packet_queue { 16 * MAX_PLAYERS };
-
-std::shared_mutex   RakNet::_kick_queue_mutex;
-MPMCQueue<uint16_t> RakNet::_kick_queue { MAX_PLAYERS };
+Memory::JumpHookPtr RakNet::hookDisconnect { nullptr };
+Memory::JumpHookPtr RakNet::hookGetRakServerInterface { nullptr };
 
 // ----------------------------------------------------------------------------
 
-bool RakNet::Start(const uint16_t allowed_players, const uint32_t depreciated,
-                   const int32_t thread_sleep_timer, const uint16_t port,
+std::shared_mutex RakNet::rpcQueueMutex;
+MPMCQueue<RakNet::SendRpcInfo> RakNet::rpcQueue { 16 * MAX_PLAYERS };
+
+std::shared_mutex RakNet::packetQueueMutex;
+MPMCQueue<RakNet::SendPacketInfo> RakNet::packetQueue { 16 * MAX_PLAYERS };
+
+std::shared_mutex RakNet::kickQueueMutex;
+MPMCQueue<uint16_t> RakNet::kickQueue { MAX_PLAYERS };
+
+// ----------------------------------------------------------------------------
+
+bool RakNet::Start(const uint16_t allowedPlayers, const uint32_t depreciated,
+                   const int32_t threadSleepTimer, const uint16_t port,
                    const char* const host) noexcept
 {
-    return _load_status && _func_start != nullptr &&
-        _func_start(_rak_server_interface, allowed_players, depreciated,
-            thread_sleep_timer, port, host);
+    if (!RakNet::loadStatus) return false;
+    if (RakNet::startFunc == nullptr) return false;
+
+    return RakNet::startFunc(RakNet::pRakServerInterface, allowedPlayers,
+                             depreciated, threadSleepTimer, port, host);
 }
 
 bool RakNet::Send(BitStream* const parameters, const PacketPriority priority,
-                  const PacketReliability reliability, const uint32_t ordering_channel,
-                  const PlayerID player_id, const bool broadcast) noexcept
+                  const PacketReliability reliability, const uint32_t orderingChannel,
+                  const PlayerID playerId, const bool broadcast) noexcept
 {
-    return _load_status && _func_send != nullptr &&
-        _func_send(_rak_server_interface, parameters, priority, reliability,
-            ordering_channel, player_id, broadcast);
+    if (!RakNet::loadStatus) return false;
+    if (RakNet::sendFunc == nullptr) return false;
+
+    return RakNet::sendFunc(RakNet::pRakServerInterface, parameters, priority,
+                            reliability, orderingChannel, playerId, broadcast);
 }
 
 Packet* RakNet::Receive() noexcept
 {
-    return _load_status && _func_receive != nullptr ?
-        _func_receive(_rak_server_interface) : nullptr;
+    if (!RakNet::loadStatus) return nullptr;
+    if (RakNet::receiveFunc == nullptr) return nullptr;
+
+    return RakNet::receiveFunc(RakNet::pRakServerInterface);
 }
 
-void RakNet::Kick(const PlayerID player_id) noexcept
+void RakNet::Kick(const PlayerID playerId) noexcept
 {
-    if (_load_status && _func_kick != nullptr)
-        _func_kick(_rak_server_interface, player_id);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::kickFunc == nullptr) return;
+
+    RakNet::kickFunc(RakNet::pRakServerInterface, playerId);
 }
 
 void RakNet::DeallocatePacket(Packet* const packet) noexcept
 {
-    if (_load_status && _func_deallocate_packet != nullptr)
-        _func_deallocate_packet(_rak_server_interface, packet);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::deallocatePacketFunc == nullptr) return;
+
+    RakNet::deallocatePacketFunc(RakNet::pRakServerInterface, packet);
 }
 
-void RakNet::SetAllowedPlayers(const uint16_t number_allowed) noexcept
+void RakNet::SetAllowedPlayers(const uint16_t numberAllowed) noexcept
 {
-    if (_load_status && _func_set_allowed_players != nullptr)
-        _func_set_allowed_players(_rak_server_interface, number_allowed);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::setAllowedPlayersFunc == nullptr) return;
+
+    return RakNet::setAllowedPlayersFunc(RakNet::pRakServerInterface, numberAllowed);
 }
 
-int RakNet::GetLastPing(const PlayerID player_id) noexcept
+int RakNet::GetLastPing(const PlayerID playerId) noexcept
 {
-    return _load_status && _func_get_last_ping != nullptr ?
-        _func_get_last_ping(_rak_server_interface, player_id) : -1;
+    if (!RakNet::loadStatus) return -1;
+    if (RakNet::getLastPingFunc == nullptr) return -1;
+
+    return RakNet::getLastPingFunc(RakNet::pRakServerInterface, playerId);
 }
 
-void RakNet::RegisterRpc(const uint8_t* const rpc_id_ptr, const RPCFunction rpc_handler) noexcept
+void RakNet::RegisterRpc(const uint8_t* const rpcIdPointer, const RPCFunction rpcHandler) noexcept
 {
-    if (_load_status && _func_register_as_rpc != nullptr)
-        _func_register_as_rpc(_rak_server_interface, rpc_id_ptr, rpc_handler);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::registerAsRpcFunc == nullptr) return;
+
+    RakNet::registerAsRpcFunc(RakNet::pRakServerInterface, rpcIdPointer, rpcHandler);
 }
 
-void RakNet::UnregisterRpc(const uint8_t* const rpc_id_ptr) noexcept
+void RakNet::UnregisterRpc(const uint8_t* const rpcIdPointer) noexcept
 {
-    if (_load_status && _func_unregister_as_rpc != nullptr)
-        _func_unregister_as_rpc(_rak_server_interface, rpc_id_ptr);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::unregisterAsRpcFunc == nullptr) return;
+
+    RakNet::unregisterAsRpcFunc(RakNet::pRakServerInterface, rpcIdPointer);
 }
 
-bool RakNet::Rpc(const uint8_t* const rpc_id_ptr, BitStream* const parameters,
+bool RakNet::Rpc(const uint8_t* const rpcIdPointer, BitStream* const parameters,
                  const PacketPriority priority, const PacketReliability reliability,
-                 const uint32_t ordering_channel, const PlayerID player_id,
-                 const bool broadcast, const bool shift_timestamp) noexcept
+                 const uint32_t orderingChannel, const PlayerID playerId,
+                 const bool broadcast, const bool shiftTimestamp) noexcept
 {
-    return _load_status && _func_rpc != nullptr &&
-        _func_rpc(_rak_server_interface, rpc_id_ptr, parameters, priority,
-            reliability, ordering_channel, player_id, broadcast, shift_timestamp);
+    if (!RakNet::loadStatus) return false;
+    if (RakNet::rpcFunc == nullptr) return false;
+
+    return RakNet::rpcFunc(RakNet::pRakServerInterface, rpcIdPointer, parameters,
+                           priority, reliability, orderingChannel, playerId,
+                           broadcast, shiftTimestamp);
 }
 
 const char* RakNet::GetLocalIp(const uint32_t index) noexcept
 {
-    return _load_status && _func_get_local_ip != nullptr ?
-        _func_get_local_ip(_rak_server_interface, index) : nullptr;
+    if (!RakNet::loadStatus) return nullptr;
+    if (RakNet::getLocalIpFunc == nullptr) return nullptr;
+
+    return RakNet::getLocalIpFunc(RakNet::pRakServerInterface, index);
 }
 
 PlayerID RakNet::GetInternalId() noexcept
 {
-    return _load_status && _func_get_internal_id != nullptr ?
-        _func_get_internal_id(_rak_server_interface) : UNASSIGNED_PLAYER_ID;
+    if (!RakNet::loadStatus) return UNASSIGNED_PLAYER_ID;
+    if (RakNet::getInternalIdFunc == nullptr) return UNASSIGNED_PLAYER_ID;
+
+    return RakNet::getInternalIdFunc(RakNet::pRakServerInterface);
 }
 
-int RakNet::GetIndexFromPlayerId(const PlayerID player_id) noexcept
+int RakNet::GetIndexFromPlayerId(const PlayerID playerId) noexcept
 {
-    return _load_status && _func_get_index_from_player_id != nullptr ?
-        _func_get_index_from_player_id(_rak_server_interface, player_id) : -1;
+    if (!RakNet::loadStatus) return -1;
+    if (RakNet::getIndexFromPlayerIdFunc == nullptr) return -1;
+
+    return RakNet::getIndexFromPlayerIdFunc(RakNet::pRakServerInterface, playerId);
 }
 
 PlayerID RakNet::GetPlayerIdFromIndex(const int32_t index) noexcept
 {
-    return _load_status && _func_get_player_id_from_index != nullptr ?
-        _func_get_player_id_from_index(_rak_server_interface, index) : UNASSIGNED_PLAYER_ID;
+    if (!RakNet::loadStatus) return UNASSIGNED_PLAYER_ID;
+    if (RakNet::getPlayerIdFromIndexFunc == nullptr) return UNASSIGNED_PLAYER_ID;
+
+    return RakNet::getPlayerIdFromIndexFunc(RakNet::pRakServerInterface, index);
 }
 
 void RakNet::AddToBanList(const char* const ip, const uint32_t milliseconds) noexcept
 {
-    if (_load_status && _func_add_to_ban_list != nullptr)
-        _func_add_to_ban_list(_rak_server_interface, ip, milliseconds);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::addToBanListFunc == nullptr) return;
+
+    RakNet::addToBanListFunc(RakNet::pRakServerInterface, ip, milliseconds);
 }
 
 void RakNet::RemoveFromBanList(const char* const ip) noexcept
 {
-    if (_load_status && _func_remove_from_ban_list != nullptr)
-        _func_remove_from_ban_list(_rak_server_interface, ip);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::removeFromBanListFunc == nullptr) return;
+
+    RakNet::removeFromBanListFunc(RakNet::pRakServerInterface, ip);
 }
 
 void RakNet::ClearBanList() noexcept
 {
-    if (_load_status && _func_clear_ban_list != nullptr)
-        _func_clear_ban_list(_rak_server_interface);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::clearBanListFunc == nullptr) return;
+
+    RakNet::clearBanListFunc(RakNet::pRakServerInterface);
 }
 
-void RakNet::SetTimeoutTime(const RakNetTime time_ms, const PlayerID target) noexcept
+void RakNet::SetTimeoutTime(const RakNetTime timeMs, const PlayerID target) noexcept
 {
-    if (_load_status && _func_set_timeout_time != nullptr)
-        _func_set_timeout_time(_rak_server_interface, time_ms, target);
+    if (!RakNet::loadStatus) return;
+    if (RakNet::setTimeoutTimeFunc == nullptr) return;
+
+    RakNet::setTimeoutTimeFunc(RakNet::pRakServerInterface, timeMs, target);
 }
 
 // ----------------------------------------------------------------------------
 
-RakNet::StartFuncType                RakNet::_func_start                    = nullptr;
-RakNet::SendFuncType                 RakNet::_func_send                     = nullptr;
-RakNet::ReceiveFuncType              RakNet::_func_receive                  = nullptr;
-RakNet::KickFuncType                 RakNet::_func_kick                     = nullptr;
-RakNet::DeallocatePacketFuncType     RakNet::_func_deallocate_packet        = nullptr;
-RakNet::SetAllowedPlayersFuncType    RakNet::_func_set_allowed_players      = nullptr;
-RakNet::GetLastPingFuncType          RakNet::_func_get_last_ping            = nullptr;
-RakNet::RegisterAsRpcFuncType        RakNet::_func_register_as_rpc          = nullptr;
-RakNet::UnregisterAsRpcFuncType      RakNet::_func_unregister_as_rpc        = nullptr;
-RakNet::RpcFuncType                  RakNet::_func_rpc                      = nullptr;
-RakNet::GetLocalIpFuncType           RakNet::_func_get_local_ip             = nullptr;
-RakNet::GetInternalIdFuncType        RakNet::_func_get_internal_id          = nullptr;
-RakNet::GetIndexFromPlayerIdFuncType RakNet::_func_get_index_from_player_id = nullptr;
-RakNet::GetPlayerIdFromIndexFuncType RakNet::_func_get_player_id_from_index = nullptr;
-RakNet::AddToBanListFuncType         RakNet::_func_add_to_ban_list          = nullptr;
-RakNet::RemoveFromBanListFuncType    RakNet::_func_remove_from_ban_list     = nullptr;
-RakNet::ClearBanListFuncType         RakNet::_func_clear_ban_list           = nullptr;
-RakNet::SetTimeoutTimeFuncType       RakNet::_func_set_timeout_time         = nullptr;
+RakNet::StartFuncType                RakNet::startFunc                { nullptr };
+RakNet::SendFuncType                 RakNet::sendFunc                 { nullptr };
+RakNet::ReceiveFuncType              RakNet::receiveFunc              { nullptr };
+RakNet::KickFuncType                 RakNet::kickFunc                 { nullptr };
+RakNet::DeallocatePacketFuncType     RakNet::deallocatePacketFunc     { nullptr };
+RakNet::SetAllowedPlayersFuncType    RakNet::setAllowedPlayersFunc    { nullptr };
+RakNet::GetLastPingFuncType          RakNet::getLastPingFunc          { nullptr };
+RakNet::RegisterAsRpcFuncType        RakNet::registerAsRpcFunc        { nullptr };
+RakNet::UnregisterAsRpcFuncType      RakNet::unregisterAsRpcFunc      { nullptr };
+RakNet::RpcFuncType                  RakNet::rpcFunc                  { nullptr };
+RakNet::GetLocalIpFuncType           RakNet::getLocalIpFunc           { nullptr };
+RakNet::GetInternalIdFuncType        RakNet::getInternalIdFunc        { nullptr };
+RakNet::GetIndexFromPlayerIdFuncType RakNet::getIndexFromPlayerIdFunc { nullptr };
+RakNet::GetPlayerIdFromIndexFuncType RakNet::getPlayerIdFromIndexFunc { nullptr };
+RakNet::AddToBanListFuncType         RakNet::addToBanListFunc         { nullptr };
+RakNet::RemoveFromBanListFuncType    RakNet::removeFromBanListFunc    { nullptr };
+RakNet::ClearBanListFuncType         RakNet::clearBanListFunc         { nullptr };
+RakNet::SetTimeoutTimeFuncType       RakNet::setTimeoutTimeFunc       { nullptr };

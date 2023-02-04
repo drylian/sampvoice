@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include <d3d9.h>
@@ -17,10 +18,9 @@
 #include "StreamInfo.h"
 #include "Channel.h"
 
-struct LocalStream : public Stream {
+class LocalStream : public Stream {
 
     LocalStream() = delete;
-    virtual ~LocalStream() noexcept = default;
     LocalStream(const LocalStream&) = delete;
     LocalStream(LocalStream&&) = delete;
     LocalStream& operator=(const LocalStream&) = delete;
@@ -28,7 +28,12 @@ struct LocalStream : public Stream {
 
 protected:
 
-    LocalStream(StreamType type, D3DCOLOR color, std::string name, float distance) noexcept;
+    explicit LocalStream(StreamType type, D3DCOLOR color,
+                         std::string name, float distance) noexcept;
+
+public:
+
+    virtual ~LocalStream() noexcept = default;
 
 public:
 
@@ -36,10 +41,12 @@ public:
 
 protected:
 
-    virtual void OnChannelCreate(const Channel& channel) noexcept override;
+    void OnChannelCreate(const Channel& channel) noexcept override;
 
 private:
 
-    float _distance;
+    float distance;
 
 };
+
+using LocalStreamPtr = std::unique_ptr<LocalStream>;

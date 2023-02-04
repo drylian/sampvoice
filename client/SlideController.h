@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <Windows.h>
 
 #include <util/Timer.h>
@@ -7,10 +9,9 @@
 #include "Parameter.h"
 #include "Channel.h"
 
-struct SlideController : public Parameter {
+class SlideController : public Parameter {
 
     SlideController() = delete;
-    ~SlideController() noexcept = default;
     SlideController(const SlideController&) = delete;
     SlideController(SlideController&&) = delete;
     SlideController& operator=(const SlideController&) = delete;
@@ -18,16 +19,22 @@ struct SlideController : public Parameter {
 
 public:
 
-    SlideController(DWORD parameter, float start_value, float end_value, Timer::time_t time) noexcept;
+    explicit SlideController(DWORD parameter, float startValue,
+                             float endValue, DWORD time) noexcept;
+
+    ~SlideController() noexcept = default;
 
 public:
 
-    virtual void Apply(const Channel& channel) noexcept override;
+    void Apply(const Channel& channel) const noexcept override;
 
 private:
 
-    float         _ratio;
-    Timer::time_t _end_time;
-    float         _end_value;
+    const float ratio;
+    const Timer::time_t endTime;
+    const float endValue;
 
 };
+
+using SlideControllerPtr = std::unique_ptr<SlideController>;
+#define MakeSlideController std::make_unique<SlideController>
