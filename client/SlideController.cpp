@@ -1,24 +1,26 @@
 #include "SlideController.h"
 
-SlideController::SlideController(const DWORD parameter, const float start_value, const float end_value, const Timer::time_t time) noexcept
-    : Parameter  { parameter }
-    , _ratio     { (end_value - start_value) / static_cast<float>(time) }
-    , _end_time  { Timer::Get() + time }
-    , _end_value { end_value }
+SlideController::SlideController(const DWORD parameter, const float startValue,
+                                 const float endValue, const DWORD time) noexcept
+    : Parameter(parameter)
+    , ratio((endValue - startValue) / static_cast<float>(time))
+    , endTime(Timer::Get() + time)
+    , endValue(endValue)
 {}
 
-void SlideController::Apply(const Channel& channel) noexcept
+void SlideController::Apply(const Channel& channel) const noexcept
 {
-    if (Timer::Get() < _end_time)
+    if (Timer::Get() < this->endTime)
     {
-        const Timer::time_t time_left = _end_time - Timer::Get();
-        const float start_value = _end_value - static_cast<float>(time_left) * _ratio;
+        const Timer::time_t timeLeft = this->endTime - Timer::Get();
+        const float startValue = this->endValue - static_cast<float>(timeLeft) * this->ratio;
 
-        BASS_ChannelSetAttribute(channel.GetHandle(), _parameter, start_value);
-        BASS_ChannelSlideAttribute(channel.GetHandle(), _parameter, _end_value, static_cast<DWORD>(time_left));
+        BASS_ChannelSetAttribute(channel.GetHandle(), this->parameter, startValue);
+        BASS_ChannelSlideAttribute(channel.GetHandle(), this->parameter, this->endValue,
+            static_cast<DWORD>(timeLeft));
     }
     else
     {
-        BASS_ChannelSetAttribute(channel.GetHandle(), _parameter, _end_value);
+        BASS_ChannelSetAttribute(channel.GetHandle(), this->parameter, this->endValue);
     }
 }

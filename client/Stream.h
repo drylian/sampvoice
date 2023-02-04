@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <memory>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -20,10 +21,9 @@
 #include "Channel.h"
 #include "Effect.h"
 
-struct Stream {
+class Stream {
 
     Stream() = delete;
-    virtual ~Stream() noexcept = default;
     Stream(const Stream&) = delete;
     Stream(Stream&&) = delete;
     Stream& operator=(const Stream&) = delete;
@@ -36,31 +36,33 @@ private:
 
 protected:
 
-    Stream(DWORD flags, StreamType type, D3DCOLOR color, std::string name) noexcept;
+    explicit Stream(DWORD streamFlags, StreamType type,
+                    D3DCOLOR color, std::string name) noexcept;
+
+public:
+
+    virtual ~Stream() noexcept = default;
 
 public:
 
     const StreamInfo& GetInfo() const noexcept;
 
     virtual void Tick() noexcept;
-
     void Push(const VoicePacket& packet);
     void Reset() noexcept;
-
     void SetParameter(BYTE parameter, float value);
     void SlideParameter(BYTE parameter, float startValue, float endValue, DWORD time);
-
     void EffectCreate(DWORD effect, DWORD number, int priority, const void* paramPtr, DWORD paramSize);
     void EffectDelete(DWORD effect);
 
-public:
-
-    void SetPlayCallback(PlayCallback&& callback) noexcept;
-    void SetStopCallback(StopCallback&& callback) noexcept;
+    std::size_t AddPlayCallback(PlayCallback playCallback);
+    std::size_t AddStopCallback(StopCallback stopCallback);
+    void RemovePlayCallback(std::size_t callback) noexcept;
+    void RemoveStopCallback(std::size_t callback) noexcept;
 
 protected:
 
-    virtual void OnChannelCreate(const Channel& channel) noexcept;
+    virtual void OnChannelCreate(const Channel& channel);
 
 private:
 
@@ -69,19 +71,21 @@ private:
 
 protected:
 
-    const std::vector<Channel>& GetChannels() const noexcept;
+    const std::vector<ChannelPtr>& GetChannels() const noexcept;
 
 private:
 
-    DWORD                     _stream_flags;
-    StreamInfo                _stream_info;
+    const DWORD streamFlags;
+    const StreamInfo streamInfo;
 
-    std::vector<Channel>      _channels;
+    std::vector<ChannelPtr> channels;
 
-    PlayCallback              _play_callback = nullptr;
-    StopCallback              _stop_callback = nullptr;
+    std::vector<PlayCallback> playCallbacks;
+    std::vector<StopCallback> stopCallbacks;
 
-    std::map<BYTE, Parameter> _parameters;
-    std::map<DWORD, Effect>   _effects;
+    std::map<BYTE, ParameterPtr> parameters;
+    std::map<DWORD, EffectPtr> effects;
 
 };
+
+using StreamPtr = std::unique_ptr<Stream>;

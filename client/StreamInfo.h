@@ -26,7 +26,6 @@ enum class StreamType
 struct StreamInfo {
 
     StreamInfo() noexcept = default;
-    ~StreamInfo() noexcept = default;
     StreamInfo(const StreamInfo&) = default;
     StreamInfo(StreamInfo&&) noexcept = default;
     StreamInfo& operator=(const StreamInfo&) = default;
@@ -36,6 +35,8 @@ public:
 
     StreamInfo(StreamType type, D3DCOLOR color, std::string name) noexcept;
 
+    ~StreamInfo() noexcept = default;
+
 public:
 
     StreamType GetType() const noexcept;
@@ -44,8 +45,8 @@ public:
 
 private:
 
-    StreamType  _type  = StreamType::None;
-    D3DCOLOR    _color = -1u;
-    std::string _name;
+    StreamType type { StreamType::None };
+    D3DCOLOR color { -1u };
+    std::string name;
 
 };

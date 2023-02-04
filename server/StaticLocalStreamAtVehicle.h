@@ -25,7 +25,7 @@ class StaticLocalStreamAtVehicle : public LocalStream {
 public:
 
     explicit StaticLocalStreamAtVehicle(float distance, uint16_t vehicleId,
-                                        uint32_t color, const std::vector<char>& name);
+                                        uint32_t color, const std::string& name);
 
     ~StaticLocalStreamAtVehicle() noexcept = default;
 

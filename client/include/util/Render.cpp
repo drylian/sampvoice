@@ -14,232 +14,405 @@
 #pragma comment(lib, "d3d9.lib")
 #pragma comment(lib, "d3dx9.lib")
 
-namespace /* variables */
+namespace
 {
-    volatile auto& gGameDirect     = *reinterpret_cast<IDirect3D9**>(0xC97C20);
-    volatile auto& gGameDevice     = *reinterpret_cast<IDirect3DDevice9**>(0xC97C28);
-    volatile auto& gGameParameters = *reinterpret_cast<D3DPRESENT_PARAMETERS*>(0xC9C040);
-}
-
-namespace /* functions */
-{
+    volatile auto& pGameDirect = *reinterpret_cast<IDirect3D9**>(0xC97C20);
+    volatile auto& pGameDevice = *reinterpret_cast<IDirect3DDevice9**>(0xC97C28);
+    volatile auto& pGameParameters = *reinterpret_cast<D3DPRESENT_PARAMETERS*>(0xC9C040);
     const auto GameDirect3DCreate9 = reinterpret_cast<IDirect3D9*(CALLBACK*)(UINT)>(0x807C2B);
 }
 
 bool Render::Init() noexcept
 {
-    if (_init_status) return false;
+    if (Render::initStatus) return false;
 
     Logger::LogToFile("[dbg:render:init] : module initializing...");
 
-    _hook_direct3d_create9 = Memory::JumpHook((LPVOID)(GameDirect3DCreate9), &HookDirect3DCreate9);
+    try
+    {
+        Render::hookDirect3DCreate9 = MakeJumpHook(GameDirect3DCreate9, Render::HookDirect3DCreate9);
+    }
+    catch (const std::exception& exception)
+    {
+        Logger::LogToFile("[err:render:init] : failed to create function hooks");
+        Render::hookDirect3DCreate9.reset();
+        return false;
+    }
 
-    _device_init_callback = nullptr;
-    _before_reset_callback = nullptr;
-    _begin_scene_callback = nullptr;
-    _render_callback = nullptr;
-    _end_scene_callback = nullptr;
-    _after_reset_callback = nullptr;
-    _device_free_callback = nullptr;
+    Render::deviceInitCallbacks.clear();
+    Render::beforeResetCallbacks.clear();
+    Render::beginSceneCallbacks.clear();
+    Render::renderCallbacks.clear();
+    Render::endSceneCallbacks.clear();
+    Render::afterResetCallbacks.clear();
+    Render::deviceFreeCallbacks.clear();
 
-    _device_mutex.lock();
-    _direct_interface = nullptr;
-    _device_interface = nullptr;
-    _device_parameters = {};
-    _device_mutex.unlock();
+    Render::deviceMutex.lock();
+    Render::pDirectInterface = nullptr;
+    Render::pDeviceInterface = nullptr;
+    Render::deviceParameters = {};
+    Render::deviceMutex.unlock();
 
     Logger::LogToFile("[dbg:render:init] : module initialized");
 
-    _init_status = true;
+    Render::initStatus = true;
 
     return true;
 }
 
 void Render::Free() noexcept
 {
-    if (_init_status)
+    if (!Render::initStatus) return;
+
+    Logger::LogToFile("[dbg:render:free] : module releasing...");
+
+    Render::hookDirect3DCreate9.reset();
+
+    Render::deviceInitCallbacks.clear();
+    Render::beforeResetCallbacks.clear();
+    Render::beginSceneCallbacks.clear();
+    Render::renderCallbacks.clear();
+    Render::endSceneCallbacks.clear();
+    Render::afterResetCallbacks.clear();
+    Render::deviceFreeCallbacks.clear();
+
+    Render::deviceMutex.lock();
+    Render::pDirectInterface = nullptr;
+    Render::pDeviceInterface = nullptr;
+    Render::deviceMutex.unlock();
+
+    Logger::LogToFile("[dbg:render:free] : module released");
+
+    Render::initStatus = false;
+}
+
+bool Render::GetWindowHandle(HWND& windowHandle) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    windowHandle = Render::deviceParameters.hDeviceWindow;
+
+    return true;
+}
+
+bool Render::GetScreenSize(float& screenWidth, float& screenHeight) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    screenWidth = Render::deviceParameters.BackBufferWidth;
+    screenHeight = Render::deviceParameters.BackBufferHeight;
+
+    return true;
+}
+
+bool Render::ConvertBaseXValueToScreenXValue(const float baseValue, float& screenValue) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    const float screenWidth = Render::deviceParameters.BackBufferWidth;
+    screenValue = (screenWidth / Render::kBaseWidth) * baseValue;
+
+    return true;
+}
+
+bool Render::ConvertBaseYValueToScreenYValue(const float baseValue, float& screenValue) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    const float screenHeight = Render::deviceParameters.BackBufferHeight;
+    screenValue = (screenHeight / Render::kBaseHeight) * baseValue;
+
+    return true;
+}
+
+bool Render::ConvertScreenXValueToBaseXValue(const float screenValue, float& baseValue) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    const float screenWidth = Render::deviceParameters.BackBufferWidth;
+    baseValue = (Render::kBaseWidth / screenWidth) * screenValue;
+
+    return true;
+}
+
+bool Render::ConvertScreenYValueToBaseYValue(const float screenValue, float& baseValue) noexcept
+{
+    const std::scoped_lock lock { Render::deviceMutex };
+
+    if (Render::pDeviceInterface == nullptr)
+        return false;
+
+    const float screenHeight = Render::deviceParameters.BackBufferHeight;
+    baseValue = (Render::kBaseHeight / screenHeight) * screenValue;
+
+    return true;
+}
+
+std::size_t Render::AddDeviceInitCallback(DeviceInitCallback callback) noexcept
+{
+    if (!Render::initStatus) return -1;
+
+    for (std::size_t i { 0 }; i < Render::deviceInitCallbacks.size(); ++i)
     {
-        Logger::LogToFile("[dbg:render:free] : module releasing...");
-
-        _hook_direct3d_create9 = {};
-
-        _device_init_callback = nullptr;
-        _before_reset_callback = nullptr;
-        _begin_scene_callback = nullptr;
-        _render_callback = nullptr;
-        _end_scene_callback = nullptr;
-        _after_reset_callback = nullptr;
-        _device_free_callback = nullptr;
-
-        _device_mutex.lock();
-        _direct_interface = nullptr;
-        _device_interface = nullptr;
-        _device_mutex.unlock();
-
-        Logger::LogToFile("[dbg:render:free] : module released");
-
-        _init_status = false;
+        if (Render::deviceInitCallbacks[i] == nullptr)
+        {
+            Render::deviceInitCallbacks[i] = std::move(callback);
+            return i;
+        }
     }
+
+    Render::deviceInitCallbacks.emplace_back(std::move(callback));
+    return Render::deviceInitCallbacks.size() - 1;
 }
 
-bool Render::GetWindowHandle(HWND& window_handle) noexcept
+std::size_t Render::AddBeforeResetCallback(BeforeResetCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::beforeResetCallbacks.size(); ++i)
+    {
+        if (Render::beforeResetCallbacks[i] == nullptr)
+        {
+            Render::beforeResetCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    window_handle = _device_parameters.hDeviceWindow;
-
-    return true;
+    Render::beforeResetCallbacks.emplace_back(std::move(callback));
+    return Render::beforeResetCallbacks.size() - 1;
 }
 
-bool Render::GetScreenSize(float& screen_width, float& screen_height) noexcept
+std::size_t Render::AddBeginSceneCallback(BeginSceneCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::beginSceneCallbacks.size(); ++i)
+    {
+        if (Render::beginSceneCallbacks[i] == nullptr)
+        {
+            Render::beginSceneCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    screen_width  = _device_parameters.BackBufferWidth;
-    screen_height = _device_parameters.BackBufferHeight;
-
-    return true;
+    Render::beginSceneCallbacks.emplace_back(std::move(callback));
+    return Render::beginSceneCallbacks.size() - 1;
 }
 
-bool Render::ConvertBaseXValueToScreenXValue(const float base_value, float& screen_value) noexcept
+std::size_t Render::AddRenderCallback(RenderCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::renderCallbacks.size(); ++i)
+    {
+        if (Render::renderCallbacks[i] == nullptr)
+        {
+            Render::renderCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    const float screen_width = _device_parameters.BackBufferWidth;
-    screen_value = (screen_width / kBaseWidth) * base_value;
-
-    return true;
+    Render::renderCallbacks.emplace_back(std::move(callback));
+    return Render::renderCallbacks.size() - 1;
 }
 
-bool Render::ConvertBaseYValueToScreenYValue(const float base_value, float& screen_value) noexcept
+std::size_t Render::AddEndSceneCallback(EndSceneCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::endSceneCallbacks.size(); ++i)
+    {
+        if (Render::endSceneCallbacks[i] == nullptr)
+        {
+            Render::endSceneCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    const float screen_height = _device_parameters.BackBufferHeight;
-    screen_value = (screen_height / kBaseHeight) * base_value;
-
-    return true;
+    Render::endSceneCallbacks.emplace_back(std::move(callback));
+    return Render::endSceneCallbacks.size() - 1;
 }
 
-bool Render::ConvertScreenXValueToBaseXValue(const float screen_value, float& base_value) noexcept
+std::size_t Render::AddAfterResetCallback(AfterResetCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::afterResetCallbacks.size(); ++i)
+    {
+        if (Render::afterResetCallbacks[i] == nullptr)
+        {
+            Render::afterResetCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    const float screen_width = _device_parameters.BackBufferWidth;
-    base_value = (kBaseWidth / screen_width) * screen_value;
-
-    return true;
+    Render::afterResetCallbacks.emplace_back(std::move(callback));
+    return Render::afterResetCallbacks.size() - 1;
 }
 
-bool Render::ConvertScreenYValueToBaseYValue(const float screen_value, float& base_value) noexcept
+std::size_t Render::AddDeviceFreeCallback(DeviceFreeCallback callback) noexcept
 {
-    const std::lock_guard lock { _device_mutex };
+    if (!Render::initStatus) return -1;
 
-    if (_device_interface == nullptr) return false;
+    for (std::size_t i { 0 }; i < Render::deviceFreeCallbacks.size(); ++i)
+    {
+        if (Render::deviceFreeCallbacks[i] == nullptr)
+        {
+            Render::deviceFreeCallbacks[i] = std::move(callback);
+            return i;
+        }
+    }
 
-    const float screen_height = _device_parameters.BackBufferHeight;
-    base_value = (kBaseHeight / screen_height) * screen_value;
-
-    return true;
+    Render::deviceFreeCallbacks.emplace_back(std::move(callback));
+    return Render::deviceFreeCallbacks.size() - 1;
 }
 
-void Render::SetDeviceInitCallback(DeviceInitCallback&& callback) noexcept
+void Render::RemoveDeviceInitCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _device_init_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::deviceInitCallbacks.size())
+        return;
+
+    Render::deviceInitCallbacks[callback] = nullptr;
 }
 
-void Render::SetBeforeResetCallback(BeforeResetCallback&& callback) noexcept
+void Render::RemoveBeforeResetCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _before_reset_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::beforeResetCallbacks.size())
+        return;
+
+    Render::beforeResetCallbacks[callback] = nullptr;
 }
 
-void Render::SetBeginSceneCallback(BeginSceneCallback&& callback) noexcept
+void Render::RemoveBeginSceneCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _begin_scene_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::beginSceneCallbacks.size())
+        return;
+
+    Render::beginSceneCallbacks[callback] = nullptr;
 }
 
-void Render::SetRenderCallback(RenderCallback&& callback) noexcept
+void Render::RemoveRenderCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _render_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::renderCallbacks.size())
+        return;
+
+    Render::renderCallbacks[callback] = nullptr;
 }
 
-void Render::SetEndSceneCallback(EndSceneCallback&& callback) noexcept
+void Render::RemoveEndSceneCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _end_scene_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::endSceneCallbacks.size())
+        return;
+
+    Render::endSceneCallbacks[callback] = nullptr;
 }
 
-void Render::SetAfterResetCallback(AfterResetCallback&& callback) noexcept
+void Render::RemoveAfterResetCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _after_reset_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::afterResetCallbacks.size())
+        return;
+
+    Render::afterResetCallbacks[callback] = nullptr;
 }
 
-void Render::SetDeviceFreeCallback(DeviceFreeCallback&& callback) noexcept
+void Render::RemoveDeviceFreeCallback(const std::size_t callback) noexcept
 {
-    if (_init_status) _device_free_callback = std::move(callback);
+    if (!Render::initStatus) return;
+
+    if (callback >= Render::deviceFreeCallbacks.size())
+        return;
+
+    Render::deviceFreeCallbacks[callback] = nullptr;
 }
 
 // --------------------------------------------------------------------------------------------------
 
-Render::IDirect3DDevice9Hook::IDirect3DDevice9Hook(IDirect3DDevice9* const orig_interface) noexcept
-    : _orig_interface { orig_interface }
+Render::IDirect3DDevice9Hook::IDirect3DDevice9Hook(IDirect3DDevice9* const pOrigInterface) noexcept
+    : pOrigInterface(pOrigInterface)
 {
-    _orig_interface->AddRef();
+    this->pOrigInterface->AddRef();
 }
 
 Render::IDirect3DDevice9Hook::~IDirect3DDevice9Hook() noexcept
 {
-    _orig_interface->Release();
+    this->pOrigInterface->Release();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::Present(CONST RECT* const source_rect,
-    CONST RECT* const dest_rect, const HWND dest_window_override,
-    CONST RGNDATA* const dirty_region) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::Present(CONST RECT* const pSourceRect, CONST RECT* const pDestRect,
+    const HWND hDestWindowOverride, CONST RGNDATA* const pDirtyRegion) noexcept
 {
-    if (_orig_interface == _device_interface && !_reset_status)
+    if (this->pOrigInterface == Render::pDeviceInterface && !this->resetStatus)
     {
-        if (_render_callback != nullptr) _render_callback();
+        for (const auto& renderCallback : Render::renderCallbacks)
+        {
+            if (renderCallback != nullptr) renderCallback();
+        }
     }
 
-    return _orig_interface->Present(source_rect, dest_rect, dest_window_override, dirty_region);
+    return this->pOrigInterface->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::QueryInterface(const REFIID riid, VOID** const ppv_obj) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::QueryInterface(REFIID riid, VOID** const ppvObj) noexcept
 {
-    *ppv_obj = nullptr;
-    const auto result = _orig_interface->QueryInterface(riid, ppv_obj);
-    if (SUCCEEDED(result)) *ppv_obj = this;
-    return result;
+    *ppvObj = nullptr;
+
+    const auto hResult = this->pOrigInterface->QueryInterface(riid, ppvObj);
+
+    if (SUCCEEDED(hResult)) *ppvObj = this;
+
+    return hResult;
 }
 
 ULONG __stdcall Render::IDirect3DDevice9Hook::AddRef() noexcept
 {
-    return _orig_interface->AddRef();
+    return this->pOrigInterface->AddRef();
 }
 
 ULONG __stdcall Render::IDirect3DDevice9Hook::Release() noexcept
 {
-    const auto count = _orig_interface->Release();
+    const auto count = this->pOrigInterface->Release();
+
     if (count <= 1)
     {
-        if (_orig_interface == _device_interface)
+        if (this->pOrigInterface == Render::pDeviceInterface)
         {
-            if (_device_free_callback != nullptr) _device_free_callback();
+            for (const auto& deviceFreeCallback : Render::deviceFreeCallbacks)
+            {
+                if (deviceFreeCallback != nullptr) deviceFreeCallback();
+            }
 
-            _device_mutex.lock();
-            _direct_interface = nullptr;
-            _device_interface = nullptr;
-            _device_parameters = {};
-            _device_mutex.unlock();
+            Render::deviceMutex.lock();
+            Render::pDirectInterface = nullptr;
+            Render::pDeviceInterface = nullptr;
+            Render::deviceParameters = {};
+            Render::deviceMutex.unlock();
         }
 
         delete this;
@@ -251,717 +424,731 @@ ULONG __stdcall Render::IDirect3DDevice9Hook::Release() noexcept
 
 HRESULT __stdcall Render::IDirect3DDevice9Hook::TestCooperativeLevel() noexcept
 {
-    return _orig_interface->TestCooperativeLevel();
+    return this->pOrigInterface->TestCooperativeLevel();
 }
 
 UINT __stdcall Render::IDirect3DDevice9Hook::GetAvailableTextureMem() noexcept
 {
-    return _orig_interface->GetAvailableTextureMem();
+    return this->pOrigInterface->GetAvailableTextureMem();
 }
 
 HRESULT __stdcall Render::IDirect3DDevice9Hook::EvictManagedResources() noexcept
 {
-    return _orig_interface->EvictManagedResources();
+    return this->pOrigInterface->EvictManagedResources();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDirect3D(IDirect3D9** const d3d9) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDirect3D(IDirect3D9** const ppD3D9) noexcept
 {
-    return _orig_interface->GetDirect3D(d3d9);
+    return this->pOrigInterface->GetDirect3D(ppD3D9);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDeviceCaps(D3DCAPS9* const caps) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDeviceCaps(D3DCAPS9* const pCaps) noexcept
 {
-    return _orig_interface->GetDeviceCaps(caps);
+    return this->pOrigInterface->GetDeviceCaps(pCaps);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDisplayMode(const UINT swapchain_index, D3DDISPLAYMODE* const display_mode) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDisplayMode(const UINT iSwapChain, D3DDISPLAYMODE* const pMode) noexcept
 {
-    return _orig_interface->GetDisplayMode(swapchain_index, display_mode);
+    return this->pOrigInterface->GetDisplayMode(iSwapChain, pMode);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* const parameters) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* const pParameters) noexcept
 {
-    return _orig_interface->GetCreationParameters(parameters);
+    return this->pOrigInterface->GetCreationParameters(pParameters);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetCursorProperties(const UINT x_hot_spot,
-    const UINT y_hot_spot, IDirect3DSurface9* const cursor_bitmap) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetCursorProperties(const UINT XHotSpot,
+    const UINT YHotSpot, IDirect3DSurface9* const pCursorBitmap) noexcept
 {
-    return _orig_interface->SetCursorProperties(x_hot_spot, y_hot_spot, cursor_bitmap);
+    return this->pOrigInterface->SetCursorProperties(XHotSpot, YHotSpot, pCursorBitmap);
 }
 
-VOID __stdcall Render::IDirect3DDevice9Hook::SetCursorPosition(const INT x, const INT y, const DWORD flags) noexcept
+VOID __stdcall Render::IDirect3DDevice9Hook::SetCursorPosition(const INT X, const INT Y, const DWORD Flags) noexcept
 {
-    _orig_interface->SetCursorPosition(x, y, flags);
+    this->pOrigInterface->SetCursorPosition(X, Y, Flags);
 }
 
-BOOL __stdcall Render::IDirect3DDevice9Hook::ShowCursor(const BOOL show) noexcept
+BOOL __stdcall Render::IDirect3DDevice9Hook::ShowCursor(const BOOL bShow) noexcept
 {
-    return _orig_interface->ShowCursor(show);
+    return this->pOrigInterface->ShowCursor(bShow);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* const presentation_parameters,
-    IDirect3DSwapChain9** const swapchain) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* const pPresentationParameters,
+    IDirect3DSwapChain9** const pSwapChain) noexcept
 {
-    return _orig_interface->CreateAdditionalSwapChain(presentation_parameters, swapchain);
+    return this->pOrigInterface->CreateAdditionalSwapChain(pPresentationParameters, pSwapChain);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetSwapChain(const UINT swapchain_index,
-    IDirect3DSwapChain9** const swapchain) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetSwapChain(const UINT iSwapChain, IDirect3DSwapChain9** const pSwapChain) noexcept
 {
-    return _orig_interface->GetSwapChain(swapchain_index, swapchain);
+    return this->pOrigInterface->GetSwapChain(iSwapChain, pSwapChain);
 }
 
 UINT __stdcall Render::IDirect3DDevice9Hook::GetNumberOfSwapChains() noexcept
 {
-    return _orig_interface->GetNumberOfSwapChains();
+    return this->pOrigInterface->GetNumberOfSwapChains();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::Reset(D3DPRESENT_PARAMETERS* const presentation_parameters) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::Reset(D3DPRESENT_PARAMETERS* const pPresentationParameters) noexcept
 {
-    if (_orig_interface == _device_interface && !_reset_status)
+    if (this->pOrigInterface == Render::pDeviceInterface && !this->resetStatus)
     {
-        if (_before_reset_callback != nullptr) _before_reset_callback();
+        for (const auto& beforeResetCallback : Render::beforeResetCallbacks)
+        {
+            if (beforeResetCallback != nullptr) beforeResetCallback();
+        }
     }
 
-    _reset_status = true;
+    this->resetStatus = true;
 
-    const auto result = _orig_interface->Reset(presentation_parameters);
+    const auto hResult = this->pOrigInterface->Reset(pPresentationParameters);
 
-    if (_orig_interface == _device_interface && SUCCEEDED(result))
+    if (this->pOrigInterface == Render::pDeviceInterface && SUCCEEDED(hResult))
     {
-        _device_mutex.lock();
-        _device_parameters = *presentation_parameters;
-        _device_mutex.unlock();
+        Render::deviceMutex.lock();
+        Render::deviceParameters = *pPresentationParameters;
+        Render::deviceMutex.unlock();
 
-        if (_reset_status)
+        if (this->resetStatus)
         {
-            if (_after_reset_callback != nullptr)
-                _after_reset_callback(_device_interface, _device_parameters);
+            for (const auto& afterResetCallback : Render::afterResetCallbacks)
+            {
+                if (afterResetCallback != nullptr) afterResetCallback(Render::pDeviceInterface, Render::deviceParameters);
+            }
         }
 
-        _reset_status = false;
+        this->resetStatus = false;
     }
 
-    return result;
+    return hResult;
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetBackBuffer(const UINT swapchain_index, const UINT backbuffer_index,
-    const D3DBACKBUFFER_TYPE type, IDirect3DSurface9** const out_backbuffer) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetBackBuffer(const UINT iSwapChain, const UINT iBackBuffer,
+    const D3DBACKBUFFER_TYPE Type, IDirect3DSurface9** const ppBackBuffer) noexcept
 {
-    return _orig_interface->GetBackBuffer(swapchain_index, backbuffer_index, type, out_backbuffer);
+    return this->pOrigInterface->GetBackBuffer(iSwapChain, iBackBuffer, Type, ppBackBuffer);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRasterStatus(const UINT swapchain_index, D3DRASTER_STATUS* const raster_status) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRasterStatus(const UINT iSwapChain, D3DRASTER_STATUS* const pRasterStatus) noexcept
 {
-    return _orig_interface->GetRasterStatus(swapchain_index, raster_status);
+    return this->pOrigInterface->GetRasterStatus(iSwapChain, pRasterStatus);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetDialogBoxMode(const BOOL enable_dialogs) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetDialogBoxMode(const BOOL bEnableDialogs) noexcept
 {
-    return _orig_interface->SetDialogBoxMode(enable_dialogs);
+    return this->pOrigInterface->SetDialogBoxMode(bEnableDialogs);
 }
 
-VOID __stdcall Render::IDirect3DDevice9Hook::SetGammaRamp(const UINT swapchain_index, const DWORD flags, CONST D3DGAMMARAMP* const ramp) noexcept
+VOID __stdcall Render::IDirect3DDevice9Hook::SetGammaRamp(const UINT iSwapChain, const DWORD Flags, CONST D3DGAMMARAMP* const pRamp) noexcept
 {
-    _orig_interface->SetGammaRamp(swapchain_index, flags, ramp);
+    this->pOrigInterface->SetGammaRamp(iSwapChain, Flags, pRamp);
 }
 
-VOID __stdcall Render::IDirect3DDevice9Hook::GetGammaRamp(const UINT swapchain_index, D3DGAMMARAMP* const ramp) noexcept
+VOID __stdcall Render::IDirect3DDevice9Hook::GetGammaRamp(const UINT iSwapChain, D3DGAMMARAMP* const pRamp) noexcept
 {
-    _orig_interface->GetGammaRamp(swapchain_index, ramp);
+    this->pOrigInterface->GetGammaRamp(iSwapChain, pRamp);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateTexture(const UINT width, const UINT height,
-    const UINT levels, const DWORD usage, const D3DFORMAT format, const D3DPOOL pool,
-    IDirect3DTexture9** const out_texture, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateTexture(const UINT Width, const UINT Height,
+    const UINT Levels, const DWORD Usage, const D3DFORMAT Format, const D3DPOOL Pool,
+    IDirect3DTexture9** const ppTexture, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateTexture(width, height, levels, usage, format, pool, out_texture, shared_handle);
+    return this->pOrigInterface->CreateTexture(Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVolumeTexture(const UINT width, const UINT height,
-    const UINT Depth, const UINT levels, const DWORD usage, const D3DFORMAT format, const D3DPOOL pool,
-    IDirect3DVolumeTexture9** const out_volume_texture, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVolumeTexture(const UINT Width, const UINT Height,
+    const UINT Depth, const UINT Levels, const DWORD Usage, const D3DFORMAT Format, const D3DPOOL Pool,
+    IDirect3DVolumeTexture9** const ppVolumeTexture, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateVolumeTexture(width, height, Depth, levels, usage, format, pool, out_volume_texture, shared_handle);
+    return this->pOrigInterface->CreateVolumeTexture(Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateCubeTexture(const UINT edge_length, const UINT levels, const DWORD usage,
-    const D3DFORMAT format, const D3DPOOL pool, IDirect3DCubeTexture9** const out_cube_texture, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateCubeTexture(const UINT EdgeLength, const UINT Levels, const DWORD Usage,
+    const D3DFORMAT Format, const D3DPOOL Pool, IDirect3DCubeTexture9** const ppCubeTexture, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateCubeTexture(edge_length, levels, usage, format, pool, out_cube_texture, shared_handle);
+    return this->pOrigInterface->CreateCubeTexture(EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexBuffer(const UINT length, const DWORD usage, const DWORD fvf,
-    const D3DPOOL pool, IDirect3DVertexBuffer9** const out_vertex_buffer, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexBuffer(const UINT Length, const DWORD Usage, const DWORD FVF,
+    const D3DPOOL Pool, IDirect3DVertexBuffer9** const ppVertexBuffer, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateVertexBuffer(length, usage, fvf, pool, out_vertex_buffer, shared_handle);
+    return this->pOrigInterface->CreateVertexBuffer(Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateIndexBuffer(const UINT length, const DWORD usage, const D3DFORMAT format,
-    const D3DPOOL pool, IDirect3DIndexBuffer9** const out_index_buffer, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateIndexBuffer(const UINT Length, const DWORD Usage, const D3DFORMAT Format,
+    const D3DPOOL Pool, IDirect3DIndexBuffer9** const ppIndexBuffer, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateIndexBuffer(length, usage, format, pool, out_index_buffer, shared_handle);
+    return this->pOrigInterface->CreateIndexBuffer(Length, Usage, Format, Pool, ppIndexBuffer, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateRenderTarget(const UINT width, const UINT height,
-    const D3DFORMAT format, const D3DMULTISAMPLE_TYPE multisample, const DWORD multisample_quality, const BOOL lockable,
-    IDirect3DSurface9** const out_surface, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateRenderTarget(const UINT Width, const UINT Height,
+    const D3DFORMAT Format, const D3DMULTISAMPLE_TYPE MultiSample, const DWORD MultisampleQuality, const BOOL Lockable,
+    IDirect3DSurface9** const ppSurface, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateRenderTarget(width, height, format, multisample,
-        multisample_quality, lockable, out_surface, shared_handle);
+    return this->pOrigInterface->CreateRenderTarget(Width, Height, Format, MultiSample,
+        MultisampleQuality, Lockable, ppSurface, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateDepthStencilSurface(const UINT width, const UINT height,
-    const D3DFORMAT format, const D3DMULTISAMPLE_TYPE multisample, const DWORD multisample_quality,
-    const BOOL discard, IDirect3DSurface9** const out_surface, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateDepthStencilSurface(const UINT Width, const UINT Height,
+    const D3DFORMAT Format, const D3DMULTISAMPLE_TYPE MultiSample, const DWORD MultisampleQuality,
+    const BOOL Discard, IDirect3DSurface9** const ppSurface, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateDepthStencilSurface(width, height, format, multisample,
-        multisample_quality, discard, out_surface, shared_handle);
+    return this->pOrigInterface->CreateDepthStencilSurface(Width, Height, Format, MultiSample,
+        MultisampleQuality, Discard, ppSurface, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::UpdateSurface(IDirect3DSurface9* const source_surface,
-    CONST RECT* const source_rect, IDirect3DSurface9* const destination_surface, CONST POINT* const dest_point) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::UpdateSurface(IDirect3DSurface9* const pSourceSurface,
+    CONST RECT* const pSourceRect, IDirect3DSurface9* const pDestinationSurface, CONST POINT* const pDestPoint) noexcept
 {
-    return _orig_interface->UpdateSurface(source_surface, source_rect, destination_surface, dest_point);
+    return this->pOrigInterface->UpdateSurface(pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::UpdateTexture(IDirect3DBaseTexture9* const source_texture,
-    IDirect3DBaseTexture9* const destination_texture) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::UpdateTexture(IDirect3DBaseTexture9* const pSourceTexture,
+    IDirect3DBaseTexture9* const pDestinationTexture) noexcept
 {
-    return _orig_interface->UpdateTexture(source_texture, destination_texture);
+    return this->pOrigInterface->UpdateTexture(pSourceTexture, pDestinationTexture);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderTargetData(IDirect3DSurface9* const render_target,
-    IDirect3DSurface9* const dest_surface) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderTargetData(IDirect3DSurface9* const pRenderTarget,
+    IDirect3DSurface9* const pDestSurface) noexcept
 {
-    return _orig_interface->GetRenderTargetData(render_target, dest_surface);
+    return this->pOrigInterface->GetRenderTargetData(pRenderTarget, pDestSurface);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetFrontBufferData(const UINT swapchain_index,
-    IDirect3DSurface9* const dest_surface) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetFrontBufferData(const UINT iSwapChain,
+    IDirect3DSurface9* const pDestSurface) noexcept
 {
-    return _orig_interface->GetFrontBufferData(swapchain_index, dest_surface);
+    return this->pOrigInterface->GetFrontBufferData(iSwapChain, pDestSurface);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::StretchRect(IDirect3DSurface9* const source_surface,
-    CONST RECT* const source_rect, IDirect3DSurface9* const dest_surface,
-    CONST RECT* const dest_rect, const D3DTEXTUREFILTERTYPE filter) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::StretchRect(IDirect3DSurface9* const pSourceSurface,
+    CONST RECT* const pSourceRect, IDirect3DSurface9* const pDestSurface,
+    CONST RECT* const pDestRect, const D3DTEXTUREFILTERTYPE Filter) noexcept
 {
-    return _orig_interface->StretchRect(source_surface, source_rect, dest_surface, dest_rect, filter);
+    return this->pOrigInterface->StretchRect(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::ColorFill(IDirect3DSurface9* const surface,
-    CONST RECT* const rect, const D3DCOLOR color) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::ColorFill(IDirect3DSurface9* const pSurface,
+    CONST RECT* const pRect, const D3DCOLOR color) noexcept
 {
-    return _orig_interface->ColorFill(surface, rect, color);
+    return this->pOrigInterface->ColorFill(pSurface, pRect, color);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateOffscreenPlainSurface(const UINT width,
-    const UINT height, const D3DFORMAT format, const D3DPOOL pool,
-    IDirect3DSurface9** const out_surface, HANDLE* const shared_handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateOffscreenPlainSurface(const UINT Width,
+    const UINT Height, const D3DFORMAT Format, const D3DPOOL Pool,
+    IDirect3DSurface9** const ppSurface, HANDLE* const pSharedHandle) noexcept
 {
-    return _orig_interface->CreateOffscreenPlainSurface(width, height, format, pool, out_surface, shared_handle);
+    return this->pOrigInterface->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetRenderTarget(const DWORD render_target_index,
-    IDirect3DSurface9* const render_target) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetRenderTarget(const DWORD RenderTargetIndex,
+    IDirect3DSurface9* const pRenderTarget) noexcept
 {
-    return _orig_interface->SetRenderTarget(render_target_index, render_target);
+    return this->pOrigInterface->SetRenderTarget(RenderTargetIndex, pRenderTarget);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderTarget(const DWORD render_target_index,
-    IDirect3DSurface9** const out_render_target) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderTarget(const DWORD RenderTargetIndex,
+    IDirect3DSurface9** const ppRenderTarget) noexcept
 {
-    return _orig_interface->GetRenderTarget(render_target_index, out_render_target);
+    return this->pOrigInterface->GetRenderTarget(RenderTargetIndex, ppRenderTarget);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetDepthStencilSurface(IDirect3DSurface9* const new_z_stencil) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetDepthStencilSurface(IDirect3DSurface9* const pNewZStencil) noexcept
 {
-    return _orig_interface->SetDepthStencilSurface(new_z_stencil);
+    return this->pOrigInterface->SetDepthStencilSurface(pNewZStencil);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDepthStencilSurface(IDirect3DSurface9** const out_z_stencil_surface) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetDepthStencilSurface(IDirect3DSurface9** const ppZStencilSurface) noexcept
 {
-    return _orig_interface->GetDepthStencilSurface(out_z_stencil_surface);
+    return this->pOrigInterface->GetDepthStencilSurface(ppZStencilSurface);
 }
 
 HRESULT __stdcall Render::IDirect3DDevice9Hook::BeginScene() noexcept
 {
-    const auto result = _orig_interface->BeginScene();
+    const auto hResult = this->pOrigInterface->BeginScene();
 
-    if (_orig_interface == _device_interface && SUCCEEDED(result) && !_reset_status)
+    if (this->pOrigInterface == Render::pDeviceInterface && SUCCEEDED(hResult) && !this->resetStatus)
     {
-        if (!_scene_status)
+        if (!this->sceneStatus)
         {
-            if (_begin_scene_callback != nullptr) _begin_scene_callback();
+            for (const auto& beginSceneCallback : Render::beginSceneCallbacks)
+            {
+                if (beginSceneCallback != nullptr) beginSceneCallback();
+            }
         }
 
-        _scene_status = true;
+        this->sceneStatus = true;
     }
 
-    return result;
+    return hResult;
 }
 
 HRESULT __stdcall Render::IDirect3DDevice9Hook::EndScene() noexcept
 {
-    if (_orig_interface == _device_interface && !_reset_status)
+    if (this->pOrigInterface == Render::pDeviceInterface && !this->resetStatus)
     {
-        if (_scene_status)
+        if (this->sceneStatus)
         {
-            if (_end_scene_callback != nullptr) _end_scene_callback();
+            for (const auto& endSceneCallback : Render::endSceneCallbacks)
+            {
+                if (endSceneCallback != nullptr) endSceneCallback();
+            }
         }
 
-        _scene_status = false;
+        this->sceneStatus = false;
     }
 
-    return _orig_interface->EndScene();
+    return this->pOrigInterface->EndScene();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::Clear(const DWORD count, CONST D3DRECT* const rects,
-    const DWORD flags, const D3DCOLOR color, const FLOAT z, const DWORD stencil) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::Clear(const DWORD Count, CONST D3DRECT* const pRects,
+    const DWORD Flags, const D3DCOLOR Color, const FLOAT Z, const DWORD Stencil) noexcept
 {
-    return _orig_interface->Clear(count, rects, flags, color, z, stencil);
+    return this->pOrigInterface->Clear(Count, pRects, Flags, Color, Z, Stencil);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTransform(const D3DTRANSFORMSTATETYPE state, CONST D3DMATRIX* const mat) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTransform(const D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* const mat) noexcept
 {
-    return _orig_interface->SetTransform(state, mat);
+    return this->pOrigInterface->SetTransform(State, mat);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTransform(const D3DTRANSFORMSTATETYPE state, D3DMATRIX* const mat) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTransform(const D3DTRANSFORMSTATETYPE State, D3DMATRIX* const mat) noexcept
 {
-    return _orig_interface->GetTransform(state, mat);
+    return this->pOrigInterface->GetTransform(State, mat);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::MultiplyTransform(const D3DTRANSFORMSTATETYPE state, CONST D3DMATRIX* const mat) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::MultiplyTransform(const D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* const mat) noexcept
 {
-    return _orig_interface->MultiplyTransform(state, mat);
+    return this->pOrigInterface->MultiplyTransform(State, mat);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetViewport(CONST D3DVIEWPORT9* const viewport) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetViewport(CONST D3DVIEWPORT9* const pViewport) noexcept
 {
-    return _orig_interface->SetViewport(viewport);
+    return this->pOrigInterface->SetViewport(pViewport);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetViewport(D3DVIEWPORT9* const viewport) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetViewport(D3DVIEWPORT9* const pViewport) noexcept
 {
-    return _orig_interface->GetViewport(viewport);
+    return this->pOrigInterface->GetViewport(pViewport);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetMaterial(CONST D3DMATERIAL9* const material) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetMaterial(CONST D3DMATERIAL9* const pMaterial) noexcept
 {
-    return _orig_interface->SetMaterial(material);
+    return this->pOrigInterface->SetMaterial(pMaterial);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetMaterial(D3DMATERIAL9* const material) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetMaterial(D3DMATERIAL9* const pMaterial) noexcept
 {
-    return _orig_interface->GetMaterial(material);
+    return this->pOrigInterface->GetMaterial(pMaterial);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetLight(const DWORD index, CONST D3DLIGHT9* const light) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetLight(const DWORD Index, CONST D3DLIGHT9* const pLight) noexcept
 {
-    return _orig_interface->SetLight(index, light);
+    return this->pOrigInterface->SetLight(Index, pLight);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetLight(const DWORD index, D3DLIGHT9* const light) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetLight(const DWORD Index, D3DLIGHT9* const pLight) noexcept
 {
-    return _orig_interface->GetLight(index, light);
+    return this->pOrigInterface->GetLight(Index, pLight);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::LightEnable(const DWORD index, const BOOL enable) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::LightEnable(const DWORD Index, const BOOL Enable) noexcept
 {
-    return _orig_interface->LightEnable(index, enable);
+    return this->pOrigInterface->LightEnable(Index, Enable);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetLightEnable(const DWORD index, BOOL* const out_enable) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetLightEnable(const DWORD Index, BOOL* const pEnable) noexcept
 {
-    return _orig_interface->GetLightEnable(index, out_enable);
+    return this->pOrigInterface->GetLightEnable(Index, pEnable);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetClipPlane(const DWORD index, CONST FLOAT* const plane) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetClipPlane(const DWORD Index, CONST FLOAT* const pPlane) noexcept
 {
-    return _orig_interface->SetClipPlane(index, plane);
+    return this->pOrigInterface->SetClipPlane(Index, pPlane);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetClipPlane(const DWORD index, FLOAT* const plane) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetClipPlane(const DWORD Index, FLOAT* const pPlane) noexcept
 {
-    return _orig_interface->GetClipPlane(index, plane);
+    return this->pOrigInterface->GetClipPlane(Index, pPlane);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetRenderState(const D3DRENDERSTATETYPE state, const DWORD value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetRenderState(const D3DRENDERSTATETYPE State, const DWORD Value) noexcept
 {
-    return _orig_interface->SetRenderState(state, value);
+    return this->pOrigInterface->SetRenderState(State, Value);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderState(const D3DRENDERSTATETYPE state, DWORD* const out_value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetRenderState(const D3DRENDERSTATETYPE State, DWORD* const pValue) noexcept
 {
-    return _orig_interface->GetRenderState(state, out_value);
+    return this->pOrigInterface->GetRenderState(State, pValue);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateStateBlock(const D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** const out_sb) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateStateBlock(const D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** const ppSB) noexcept
 {
-    return _orig_interface->CreateStateBlock(type, out_sb);
+    return this->pOrigInterface->CreateStateBlock(Type, ppSB);
 }
 
 HRESULT __stdcall Render::IDirect3DDevice9Hook::BeginStateBlock() noexcept
 {
-    return _orig_interface->BeginStateBlock();
+    return this->pOrigInterface->BeginStateBlock();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::EndStateBlock(IDirect3DStateBlock9** const sb_ptr) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::EndStateBlock(IDirect3DStateBlock9** const ppSB) noexcept
 {
-    return _orig_interface->EndStateBlock(sb_ptr);
+    return this->pOrigInterface->EndStateBlock(ppSB);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetClipStatus(CONST D3DCLIPSTATUS9* const clip_status) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetClipStatus(CONST D3DCLIPSTATUS9* const pClipStatus) noexcept
 {
-    return _orig_interface->SetClipStatus(clip_status);
+    return this->pOrigInterface->SetClipStatus(pClipStatus);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetClipStatus(D3DCLIPSTATUS9* const clip_status) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetClipStatus(D3DCLIPSTATUS9* const pClipStatus) noexcept
 {
-    return _orig_interface->GetClipStatus(clip_status);
+    return this->pOrigInterface->GetClipStatus(pClipStatus);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTexture(const DWORD stage, IDirect3DBaseTexture9** const out_texture) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTexture(const DWORD Stage, IDirect3DBaseTexture9** const ppTexture) noexcept
 {
-    return _orig_interface->GetTexture(stage, out_texture);
+    return this->pOrigInterface->GetTexture(Stage, ppTexture);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTexture(const DWORD stage, IDirect3DBaseTexture9* const texture) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTexture(const DWORD Stage, IDirect3DBaseTexture9* const pTexture) noexcept
 {
-    return _orig_interface->SetTexture(stage, texture);
+    return this->pOrigInterface->SetTexture(Stage, pTexture);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTextureStageState(const DWORD stage,
-    const D3DTEXTURESTAGESTATETYPE type, DWORD* const out_value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetTextureStageState(const DWORD Stage,
+    const D3DTEXTURESTAGESTATETYPE Type, DWORD* const pValue) noexcept
 {
-    return _orig_interface->GetTextureStageState(stage, type, out_value);
+    return this->pOrigInterface->GetTextureStageState(Stage, Type, pValue);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTextureStageState(const DWORD stage,
-    const D3DTEXTURESTAGESTATETYPE type, const DWORD value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetTextureStageState(const DWORD Stage,
+    const D3DTEXTURESTAGESTATETYPE Type, const DWORD Value) noexcept
 {
-    return _orig_interface->SetTextureStageState(stage, type, value);
+    return this->pOrigInterface->SetTextureStageState(Stage, Type, Value);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetSamplerState(const DWORD sampler,
-    const D3DSAMPLERSTATETYPE type, DWORD* const out_value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetSamplerState(const DWORD Sampler,
+    const D3DSAMPLERSTATETYPE Type, DWORD* const pValue) noexcept
 {
-    return _orig_interface->GetSamplerState(sampler, type, out_value);
+    return this->pOrigInterface->GetSamplerState(Sampler, Type, pValue);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetSamplerState(const DWORD sampler,
-    const D3DSAMPLERSTATETYPE type, const DWORD value) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetSamplerState(const DWORD Sampler,
+    const D3DSAMPLERSTATETYPE Type, const DWORD Value) noexcept
 {
-    return _orig_interface->SetSamplerState(sampler, type, value);
+    return this->pOrigInterface->SetSamplerState(Sampler, Type, Value);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::ValidateDevice(DWORD* const num_passes) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::ValidateDevice(DWORD* const pNumPasses) noexcept
 {
-    return _orig_interface->ValidateDevice(num_passes);
+    return this->pOrigInterface->ValidateDevice(pNumPasses);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPaletteEntries(const UINT palette_number,
-    CONST PALETTEENTRY* const entries) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPaletteEntries(const UINT PaletteNumber,
+    CONST PALETTEENTRY* const pEntries) noexcept
 {
-    return _orig_interface->SetPaletteEntries(palette_number, entries);
+    return this->pOrigInterface->SetPaletteEntries(PaletteNumber, pEntries);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPaletteEntries(const UINT palette_number,
-    PALETTEENTRY* const entries) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPaletteEntries(const UINT PaletteNumber,
+    PALETTEENTRY* const pEntries) noexcept
 {
-    return _orig_interface->GetPaletteEntries(palette_number, entries);
+    return this->pOrigInterface->GetPaletteEntries(PaletteNumber, pEntries);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetCurrentTexturePalette(const UINT palette_number) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetCurrentTexturePalette(const UINT PaletteNumber) noexcept
 {
-    return _orig_interface->SetCurrentTexturePalette(palette_number);
+    return this->pOrigInterface->SetCurrentTexturePalette(PaletteNumber);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetCurrentTexturePalette(UINT* const palette_number) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetCurrentTexturePalette(UINT* const PaletteNumber) noexcept
 {
-    return _orig_interface->GetCurrentTexturePalette(palette_number);
+    return this->pOrigInterface->GetCurrentTexturePalette(PaletteNumber);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetScissorRect(CONST RECT* const rect) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetScissorRect(CONST RECT* const pRect) noexcept
 {
-    return _orig_interface->SetScissorRect(rect);
+    return this->pOrigInterface->SetScissorRect(pRect);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetScissorRect(RECT* const rect) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetScissorRect(RECT* const pRect) noexcept
 {
-    return _orig_interface->GetScissorRect(rect);
+    return this->pOrigInterface->GetScissorRect(pRect);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetSoftwareVertexProcessing(const BOOL software) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetSoftwareVertexProcessing(const BOOL bSoftware) noexcept
 {
-    return _orig_interface->SetSoftwareVertexProcessing(software);
+    return this->pOrigInterface->SetSoftwareVertexProcessing(bSoftware);
 }
 
 BOOL __stdcall Render::IDirect3DDevice9Hook::GetSoftwareVertexProcessing() noexcept
 {
-    return _orig_interface->GetSoftwareVertexProcessing();
+    return this->pOrigInterface->GetSoftwareVertexProcessing();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetNPatchMode(const FLOAT segments) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetNPatchMode(const FLOAT nSegments) noexcept
 {
-    return _orig_interface->SetNPatchMode(segments);
+    return this->pOrigInterface->SetNPatchMode(nSegments);
 }
 
 FLOAT __stdcall Render::IDirect3DDevice9Hook::GetNPatchMode() noexcept
 {
-    return _orig_interface->GetNPatchMode();
+    return this->pOrigInterface->GetNPatchMode();
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawPrimitive(const D3DPRIMITIVETYPE primitive_type,
-    const UINT start_vertex, const UINT primitive_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawPrimitive(const D3DPRIMITIVETYPE PrimitiveType,
+    const UINT StartVertex, const UINT PrimitiveCount) noexcept
 {
-    return _orig_interface->DrawPrimitive(primitive_type, start_vertex, primitive_count);
+    return this->pOrigInterface->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawIndexedPrimitive(const D3DPRIMITIVETYPE type,
-    const INT base_vertex_index, const UINT min_vertex_index, const UINT num_vertices,
-    const UINT start_index, const UINT prim_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawIndexedPrimitive(const D3DPRIMITIVETYPE Type,
+    const INT BaseVertexIndex, const UINT MinVertexIndex, const UINT NumVertices,
+    const UINT startIndex, const UINT primCount) noexcept
 {
-    return _orig_interface->DrawIndexedPrimitive(type, base_vertex_index, min_vertex_index, num_vertices, start_index, prim_count);
+    return this->pOrigInterface->DrawIndexedPrimitive(Type, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawPrimitiveUP(const D3DPRIMITIVETYPE primitive_type,
-    const UINT primitive_count, CONST VOID* const vertex_stream_zero_data, const UINT vertex_stream_zero_stride) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawPrimitiveUP(const D3DPRIMITIVETYPE PrimitiveType,
+    const UINT PrimitiveCount, CONST VOID* const pVertexStreamZeroData, const UINT VertexStreamZeroStride) noexcept
 {
-    return _orig_interface->DrawPrimitiveUP(primitive_type, primitive_count, vertex_stream_zero_data, vertex_stream_zero_stride);
+    return this->pOrigInterface->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawIndexedPrimitiveUP(const D3DPRIMITIVETYPE primitive_type,
-    const UINT min_vertex_index, const UINT num_vertices, const UINT primitive_count, CONST VOID* const index_data,
-    const D3DFORMAT index_data_format, CONST VOID* const vertex_stream_zero_data, const UINT vertex_stream_zero_stride) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawIndexedPrimitiveUP(const D3DPRIMITIVETYPE PrimitiveType,
+    const UINT MinVertexIndex, const UINT NumVertices, const UINT PrimitiveCount, CONST VOID* const pIndexData,
+    const D3DFORMAT IndexDataFormat, CONST VOID* const pVertexStreamZeroData, const UINT VertexStreamZeroStride) noexcept
 {
-    return _orig_interface->DrawIndexedPrimitiveUP(primitive_type, min_vertex_index, num_vertices,
-        primitive_count, index_data, index_data_format, vertex_stream_zero_data, vertex_stream_zero_stride);
+    return this->pOrigInterface->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices,
+        PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::ProcessVertices(const UINT src_start_index,
-    const UINT dest_index, const UINT vertex_count, IDirect3DVertexBuffer9* const dest_buffer,
-    IDirect3DVertexDeclaration9* const vertex_decl, const DWORD flags) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::ProcessVertices(const UINT SrcStartIndex,
+    const UINT DestIndex, const UINT VertexCount, IDirect3DVertexBuffer9* const pDestBuffer,
+    IDirect3DVertexDeclaration9* const pVertexDecl, const DWORD Flags) noexcept
 {
-    return _orig_interface->ProcessVertices(src_start_index, dest_index, vertex_count, dest_buffer, vertex_decl, flags);
+    return this->pOrigInterface->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* const vertex_elements,
-    IDirect3DVertexDeclaration9** const out_decl) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* const pVertexElements,
+    IDirect3DVertexDeclaration9** const ppDecl) noexcept
 {
-    return _orig_interface->CreateVertexDeclaration(vertex_elements, out_decl);
+    return this->pOrigInterface->CreateVertexDeclaration(pVertexElements, ppDecl);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexDeclaration(IDirect3DVertexDeclaration9* const decl) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexDeclaration(IDirect3DVertexDeclaration9* const pDecl) noexcept
 {
-    return _orig_interface->SetVertexDeclaration(decl);
+    return this->pOrigInterface->SetVertexDeclaration(pDecl);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexDeclaration(IDirect3DVertexDeclaration9** const out_decl) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexDeclaration(IDirect3DVertexDeclaration9** const ppDecl) noexcept
 {
-    return _orig_interface->GetVertexDeclaration(out_decl);
+    return this->pOrigInterface->GetVertexDeclaration(ppDecl);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetFVF(const DWORD fvf) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetFVF(const DWORD FVF) noexcept
 {
-    return _orig_interface->SetFVF(fvf);
+    return this->pOrigInterface->SetFVF(FVF);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetFVF(DWORD* const out_fvf) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetFVF(DWORD* const pFVF) noexcept
 {
-    return _orig_interface->GetFVF(out_fvf);
+    return this->pOrigInterface->GetFVF(pFVF);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexShader(CONST DWORD* const function,
-    IDirect3DVertexShader9** const out_shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateVertexShader(CONST DWORD* const pFunction,
+    IDirect3DVertexShader9** const ppShader) noexcept
 {
-    return _orig_interface->CreateVertexShader(function, out_shader);
+    return this->pOrigInterface->CreateVertexShader(pFunction, ppShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShader(IDirect3DVertexShader9* const shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShader(IDirect3DVertexShader9* const pShader) noexcept
 {
-    return _orig_interface->SetVertexShader(shader);
+    return this->pOrigInterface->SetVertexShader(pShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShader(IDirect3DVertexShader9** const out_shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShader(IDirect3DVertexShader9** const ppShader) noexcept
 {
-    return _orig_interface->GetVertexShader(out_shader);
+    return this->pOrigInterface->GetVertexShader(ppShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantF(const UINT start_register,
-    CONST FLOAT* const constant_data, const UINT vector4f_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantF(const UINT StartRegister,
+    CONST FLOAT* const pConstantData, const UINT Vector4fCount) noexcept
 {
-    return _orig_interface->SetVertexShaderConstantF(start_register, constant_data, vector4f_count);
+    return this->pOrigInterface->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantF(const UINT start_register,
-    FLOAT* const constant_data, const UINT vector4f_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantF(const UINT StartRegister,
+    FLOAT* const pConstantData, const UINT Vector4fCount) noexcept
 {
-    return _orig_interface->GetVertexShaderConstantF(start_register, constant_data, vector4f_count);
+    return this->pOrigInterface->GetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantI(const UINT start_register,
-    CONST INT* const constant_data, const UINT vector4i_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantI(const UINT StartRegister,
+    CONST INT* const pConstantData, const UINT Vector4iCount) noexcept
 {
-    return _orig_interface->SetVertexShaderConstantI(start_register, constant_data, vector4i_count);
+    return this->pOrigInterface->SetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantI(const UINT start_register,
-    INT* const constant_data, const UINT vector4i_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantI(const UINT StartRegister,
+    INT* const pConstantData, const UINT Vector4iCount) noexcept
 {
-    return _orig_interface->GetVertexShaderConstantI(start_register, constant_data, vector4i_count);
+    return this->pOrigInterface->GetVertexShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantB(const UINT start_register,
-    CONST BOOL* const constant_data, const UINT bool_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetVertexShaderConstantB(const UINT StartRegister,
+    CONST BOOL* const pConstantData, const UINT BoolCount) noexcept
 {
-    return _orig_interface->SetVertexShaderConstantB(start_register, constant_data, bool_count);
+    return this->pOrigInterface->SetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantB(const UINT start_register,
-    BOOL* const constant_data, const UINT bool_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetVertexShaderConstantB(const UINT StartRegister,
+    BOOL* const pConstantData, const UINT BoolCount) noexcept
 {
-    return _orig_interface->GetVertexShaderConstantB(start_register, constant_data, bool_count);
+    return this->pOrigInterface->GetVertexShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetStreamSource(const UINT stream_number,
-    IDirect3DVertexBuffer9* const stream_data, const UINT offset_in_bytes, const UINT stride) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetStreamSource(const UINT StreamNumber,
+    IDirect3DVertexBuffer9* const pStreamData, const UINT OffsetInBytes, const UINT Stride) noexcept
 {
-    return _orig_interface->SetStreamSource(stream_number, stream_data, offset_in_bytes, stride);
+    return this->pOrigInterface->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetStreamSource(const UINT stream_number,
-    IDirect3DVertexBuffer9** const out_stream_data, UINT* const offset_in_bytes, UINT* const out_stride) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetStreamSource(const UINT StreamNumber,
+    IDirect3DVertexBuffer9** const ppStreamData, UINT* const OffsetInBytes, UINT* const pStride) noexcept
 {
-    return _orig_interface->GetStreamSource(stream_number, out_stream_data, offset_in_bytes, out_stride);
+    return this->pOrigInterface->GetStreamSource(StreamNumber, ppStreamData, OffsetInBytes, pStride);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetStreamSourceFreq(const UINT stream_number, const UINT divider) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetStreamSourceFreq(const UINT StreamNumber, const UINT Divider) noexcept
 {
-    return _orig_interface->SetStreamSourceFreq(stream_number, divider);
+    return this->pOrigInterface->SetStreamSourceFreq(StreamNumber, Divider);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetStreamSourceFreq(const UINT stream_number, UINT* const divider) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetStreamSourceFreq(const UINT StreamNumber, UINT* const Divider) noexcept
 {
-    return _orig_interface->GetStreamSourceFreq(stream_number, divider);
+    return this->pOrigInterface->GetStreamSourceFreq(StreamNumber, Divider);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetIndices(IDirect3DIndexBuffer9* const index_data) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetIndices(IDirect3DIndexBuffer9* const pIndexData) noexcept
 {
-    return _orig_interface->SetIndices(index_data);
+    return this->pOrigInterface->SetIndices(pIndexData);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetIndices(IDirect3DIndexBuffer9** const out_index_data) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetIndices(IDirect3DIndexBuffer9** const ppIndexData) noexcept
 {
-    return _orig_interface->GetIndices(out_index_data);
+    return this->pOrigInterface->GetIndices(ppIndexData);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreatePixelShader(CONST DWORD* const function,
-    IDirect3DPixelShader9** const out_shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreatePixelShader(CONST DWORD* const pFunction,
+    IDirect3DPixelShader9** const ppShader) noexcept
 {
-    return _orig_interface->CreatePixelShader(function, out_shader);
+    return this->pOrigInterface->CreatePixelShader(pFunction, ppShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShader(IDirect3DPixelShader9* const shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShader(IDirect3DPixelShader9* const pShader) noexcept
 {
-    return _orig_interface->SetPixelShader(shader);
+    return this->pOrigInterface->SetPixelShader(pShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShader(IDirect3DPixelShader9** const out_shader) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShader(IDirect3DPixelShader9** const ppShader) noexcept
 {
-    return _orig_interface->GetPixelShader(out_shader);
+    return this->pOrigInterface->GetPixelShader(ppShader);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantF(const UINT start_register,
-    CONST FLOAT* const constant_data, const UINT vector4f_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantF(const UINT StartRegister,
+    CONST FLOAT* const pConstantData, const UINT Vector4fCount) noexcept
 {
-    return _orig_interface->SetPixelShaderConstantF(start_register, constant_data, vector4f_count);
+    return this->pOrigInterface->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantF(const UINT start_register,
-    FLOAT* const constant_data, const UINT vector4f_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantF(const UINT StartRegister,
+    FLOAT* const pConstantData, const UINT Vector4fCount) noexcept
 {
-    return _orig_interface->GetPixelShaderConstantF(start_register, constant_data, vector4f_count);
+    return this->pOrigInterface->GetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantI(const UINT start_register,
-    CONST INT* const constant_data, const UINT vector4i_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantI(const UINT StartRegister,
+    CONST INT* const pConstantData, const UINT Vector4iCount) noexcept
 {
-    return _orig_interface->SetPixelShaderConstantI(start_register, constant_data, vector4i_count);
+    return this->pOrigInterface->SetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantI(const UINT start_register,
-    INT* const constant_data, const UINT vector4i_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantI(const UINT StartRegister,
+    INT* const pConstantData, const UINT Vector4iCount) noexcept
 {
-    return _orig_interface->GetPixelShaderConstantI(start_register, constant_data, vector4i_count);
+    return this->pOrigInterface->GetPixelShaderConstantI(StartRegister, pConstantData, Vector4iCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantB(const UINT start_register,
-    CONST BOOL* const constant_data, const UINT bool_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::SetPixelShaderConstantB(const UINT StartRegister,
+    CONST BOOL* const pConstantData, const UINT BoolCount) noexcept
 {
-    return _orig_interface->SetPixelShaderConstantB(start_register, constant_data, bool_count);
+    return this->pOrigInterface->SetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantB(const UINT start_register,
-    BOOL* const constant_data, const UINT bool_count) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::GetPixelShaderConstantB(const UINT StartRegister,
+    BOOL* const pConstantData, const UINT BoolCount) noexcept
 {
-    return _orig_interface->GetPixelShaderConstantB(start_register, constant_data, bool_count);
+    return this->pOrigInterface->GetPixelShaderConstantB(StartRegister, pConstantData, BoolCount);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawRectPatch(const UINT handle, CONST FLOAT* const num_segs,
-    CONST D3DRECTPATCH_INFO* const rect_patch_info) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawRectPatch(const UINT Handle, CONST FLOAT* const pNumSegs,
+    CONST D3DRECTPATCH_INFO* const pRectPatchInfo) noexcept
 {
-    return _orig_interface->DrawRectPatch(handle, num_segs, rect_patch_info);
+    return this->pOrigInterface->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawTriPatch(const UINT handle, CONST FLOAT* const num_segs,
-    CONST D3DTRIPATCH_INFO* const tri_patch_info) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DrawTriPatch(const UINT Handle, CONST FLOAT* const pNumSegs,
+    CONST D3DTRIPATCH_INFO* const pTriPatchInfo) noexcept
 {
-    return _orig_interface->DrawTriPatch(handle, num_segs, tri_patch_info);
+    return this->pOrigInterface->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::DeletePatch(const UINT handle) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::DeletePatch(const UINT Handle) noexcept
 {
-    return _orig_interface->DeletePatch(handle);
+    return this->pOrigInterface->DeletePatch(Handle);
 }
 
-HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateQuery(const D3DQUERYTYPE type, IDirect3DQuery9** const out_query) noexcept
+HRESULT __stdcall Render::IDirect3DDevice9Hook::CreateQuery(const D3DQUERYTYPE Type, IDirect3DQuery9** const ppQuery) noexcept
 {
-    return _orig_interface->CreateQuery(type, out_query);
+    return this->pOrigInterface->CreateQuery(Type, ppQuery);
 }
 
 // --------------------------------------------------------------------------------------------------
 
-Render::IDirect3D9Hook::IDirect3D9Hook(IDirect3D9* const orig_interface) noexcept
-    : _orig_interface { orig_interface }
+Render::IDirect3D9Hook::IDirect3D9Hook(IDirect3D9* const pOrigInterface) noexcept
+    : pOrigInterface(pOrigInterface)
 {
-    _orig_interface->AddRef();
+    this->pOrigInterface->AddRef();
 }
 
 Render::IDirect3D9Hook::~IDirect3D9Hook() noexcept
 {
-    _orig_interface->Release();
+    this->pOrigInterface->Release();
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::QueryInterface(const REFIID riid, VOID** const ppv_obj) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::QueryInterface(REFIID riid, VOID** const ppvObj) noexcept
 {
-    *ppv_obj = nullptr;
-    const auto result = _orig_interface->QueryInterface(riid, ppv_obj);
-    if (SUCCEEDED(result)) *ppv_obj = this;
-    return result;
+    *ppvObj = nullptr;
+
+    const auto hResult = this->pOrigInterface->QueryInterface(riid, ppvObj);
+
+    if (SUCCEEDED(hResult)) *ppvObj = this;
+
+    return hResult;
 }
 
 ULONG __stdcall Render::IDirect3D9Hook::AddRef() noexcept
 {
-    return _orig_interface->AddRef();
+    return this->pOrigInterface->AddRef();
 }
 
 ULONG __stdcall Render::IDirect3D9Hook::Release() noexcept
 {
-    const auto count = _orig_interface->Release();
+    const auto count = this->pOrigInterface->Release();
+
     if (count <= 1)
     {
         delete this;
@@ -971,165 +1158,174 @@ ULONG __stdcall Render::IDirect3D9Hook::Release() noexcept
     return count;
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::RegisterSoftwareDevice(VOID* const initialize_function) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::RegisterSoftwareDevice(VOID* const pInitializeFunction) noexcept
 {
-    return _orig_interface->RegisterSoftwareDevice(initialize_function);
+    return this->pOrigInterface->RegisterSoftwareDevice(pInitializeFunction);
 }
 
 UINT __stdcall Render::IDirect3D9Hook::GetAdapterCount() noexcept
 {
-    return _orig_interface->GetAdapterCount();
+    return this->pOrigInterface->GetAdapterCount();
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::GetAdapterIdentifier(const UINT adapter, const DWORD flags,
-    D3DADAPTER_IDENTIFIER9* const identifier) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::GetAdapterIdentifier(const UINT Adapter, const DWORD Flags,
+    D3DADAPTER_IDENTIFIER9* const pIdentifier) noexcept
 {
-    return _orig_interface->GetAdapterIdentifier(adapter, flags, identifier);
+    return this->pOrigInterface->GetAdapterIdentifier(Adapter, Flags, pIdentifier);
 }
 
-UINT __stdcall Render::IDirect3D9Hook::GetAdapterModeCount(const UINT adapter, const D3DFORMAT format) noexcept
+UINT __stdcall Render::IDirect3D9Hook::GetAdapterModeCount(const UINT Adapter, const D3DFORMAT Format) noexcept
 {
-    return _orig_interface->GetAdapterModeCount(adapter, format);
+    return this->pOrigInterface->GetAdapterModeCount(Adapter, Format);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::EnumAdapterModes(const UINT adapter, const D3DFORMAT format,
-    const UINT mode, D3DDISPLAYMODE* const display_mode) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::EnumAdapterModes(const UINT Adapter, const D3DFORMAT Format,
+    const UINT Mode, D3DDISPLAYMODE* const pMode) noexcept
 {
-    return _orig_interface->EnumAdapterModes(adapter, format, mode, display_mode);
+    return this->pOrigInterface->EnumAdapterModes(Adapter, Format, Mode, pMode);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::GetAdapterDisplayMode(const UINT adapter, D3DDISPLAYMODE* const display_mode) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::GetAdapterDisplayMode(const UINT Adapter, D3DDISPLAYMODE* const pMode) noexcept
 {
-    return _orig_interface->GetAdapterDisplayMode(adapter, display_mode);
+    return this->pOrigInterface->GetAdapterDisplayMode(Adapter, pMode);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceType(const UINT adapter, const D3DDEVTYPE dev_type,
-    const D3DFORMAT adapter_format, const D3DFORMAT backbuffer_format, const BOOL windowed) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceType(const UINT Adapter, const D3DDEVTYPE DevType,
+    const D3DFORMAT AdapterFormat, const D3DFORMAT BackBufferFormat, const BOOL bWindowed) noexcept
 {
-    return _orig_interface->CheckDeviceType(adapter, dev_type, adapter_format, backbuffer_format, windowed);
+    return this->pOrigInterface->CheckDeviceType(Adapter, DevType,
+        AdapterFormat, BackBufferFormat, bWindowed);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceFormat(const UINT adapter, const D3DDEVTYPE device_type,
-    const D3DFORMAT adapter_format, const DWORD usage, const D3DRESOURCETYPE resource_type,
-    D3DFORMAT check_format) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceFormat(const UINT Adapter, const D3DDEVTYPE DeviceType,
+    const D3DFORMAT AdapterFormat, const DWORD Usage, const D3DRESOURCETYPE RType,
+    D3DFORMAT CheckFormat) noexcept
 {
-    return _orig_interface->CheckDeviceFormat(adapter, device_type, adapter_format, usage, resource_type, check_format);
+    return this->pOrigInterface->CheckDeviceFormat(Adapter, DeviceType,
+        AdapterFormat, Usage, RType, CheckFormat);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceMultiSampleType(const UINT adapter, const D3DDEVTYPE device_type,
-    const D3DFORMAT surface_format, const BOOL windowed, const D3DMULTISAMPLE_TYPE multisample_type,
-    DWORD* const quality_levels) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceMultiSampleType(const UINT Adapter, const D3DDEVTYPE DeviceType,
+    const D3DFORMAT SurfaceFormat, const BOOL Windowed, const D3DMULTISAMPLE_TYPE MultiSampleType,
+    DWORD* const pQualityLevels) noexcept
 {
-    return _orig_interface->CheckDeviceMultiSampleType(adapter, device_type,
-        surface_format, windowed, multisample_type, quality_levels);
+    return this->pOrigInterface->CheckDeviceMultiSampleType(Adapter, DeviceType,
+        SurfaceFormat, Windowed, MultiSampleType, pQualityLevels);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CheckDepthStencilMatch(const UINT adapter, const D3DDEVTYPE device_type,
-    const D3DFORMAT adapter_format, const D3DFORMAT render_target_format, const D3DFORMAT depth_stencil_format) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CheckDepthStencilMatch(const UINT Adapter, const D3DDEVTYPE DeviceType,
+    const D3DFORMAT AdapterFormat, const D3DFORMAT RenderTargetFormat, const D3DFORMAT DepthStencilFormat) noexcept
 {
-    return _orig_interface->CheckDepthStencilMatch(adapter, device_type,
-        adapter_format, render_target_format, depth_stencil_format);
+    return this->pOrigInterface->CheckDepthStencilMatch(Adapter, DeviceType,
+        AdapterFormat, RenderTargetFormat, DepthStencilFormat);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceFormatConversion(const UINT adapter, const D3DDEVTYPE device_type,
-    const D3DFORMAT source_format, const D3DFORMAT target_format) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CheckDeviceFormatConversion(const UINT Adapter, const D3DDEVTYPE DeviceType,
+    const D3DFORMAT SourceFormat, const D3DFORMAT TargetFormat) noexcept
 {
-    return _orig_interface->CheckDeviceFormatConversion(adapter, device_type, source_format, target_format);
+    return this->pOrigInterface->CheckDeviceFormatConversion(Adapter, DeviceType, SourceFormat, TargetFormat);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::GetDeviceCaps(const UINT adapter,
-    const D3DDEVTYPE device_type, D3DCAPS9* const caps) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::GetDeviceCaps(const UINT Adapter,
+    const D3DDEVTYPE DeviceType, D3DCAPS9* const pCaps) noexcept
 {
-    return _orig_interface->GetDeviceCaps(adapter, device_type, caps);
+    return this->pOrigInterface->GetDeviceCaps(Adapter, DeviceType, pCaps);
 }
 
-HMONITOR __stdcall Render::IDirect3D9Hook::GetAdapterMonitor(const UINT adapter) noexcept
+HMONITOR __stdcall Render::IDirect3D9Hook::GetAdapterMonitor(const UINT Adapter) noexcept
 {
-    return _orig_interface->GetAdapterMonitor(adapter);
+    return this->pOrigInterface->GetAdapterMonitor(Adapter);
 }
 
-HRESULT __stdcall Render::IDirect3D9Hook::CreateDevice(const UINT adapter, const D3DDEVTYPE device_type, const HWND focus_window,
-    const DWORD behavior_flags, D3DPRESENT_PARAMETERS* const presentation_parameters,
-    IDirect3DDevice9** const out_returned_device_interface) noexcept
+HRESULT __stdcall Render::IDirect3D9Hook::CreateDevice(const UINT Adapter, const D3DDEVTYPE DeviceType, const HWND hFocusWindow,
+    const DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* const pPresentationParameters,
+    IDirect3DDevice9** const ppReturnedDeviceInterface) noexcept
 {
-    const auto result = _orig_interface->CreateDevice(adapter, device_type,
-        focus_window, behavior_flags, presentation_parameters, out_returned_device_interface);
+    const auto hResult = this->pOrigInterface->CreateDevice(Adapter, DeviceType,
+        hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
 
-    if (FAILED(result) || this != gGameDirect || out_returned_device_interface != &gGameDevice)
-        return result;
+    if (FAILED(hResult) || this != pGameDirect || ppReturnedDeviceInterface != &pGameDevice)
+        return hResult;
 
     Logger::LogToFile("[dbg:render:direct] : device interface (ptr:%p) success created with "
         "hwnd (value:%u) windowed (value:%d) screenwidth (value:%u) screenheight (value:%u)",
-        *out_returned_device_interface, focus_window, presentation_parameters->windowed,
-        presentation_parameters->BackBufferWidth, presentation_parameters->BackBufferHeight);
+        *ppReturnedDeviceInterface, hFocusWindow, pPresentationParameters->Windowed,
+        pPresentationParameters->BackBufferWidth, pPresentationParameters->BackBufferHeight);
 
-    const auto hook_device = new (std::nothrow) IDirect3DDevice9Hook(*out_returned_device_interface);
-    if (hook_device == nullptr)
+    const auto pHookDevice = new (std::nothrow) IDirect3DDevice9Hook(*ppReturnedDeviceInterface);
+
+    if (pHookDevice == nullptr)
     {
         Logger::LogToFile("[err:render:direct] : failed to allocate memory for hook interface");
-        return result;
+        return hResult;
     }
 
     Logger::LogToFile("[dbg:render:direct] : pointer successfully replaced from orig (ptr:%p) to hook (ptr:%p)",
-        *out_returned_device_interface, hook_device);
+        *ppReturnedDeviceInterface, pHookDevice);
 
-    if (_direct_interface != nullptr)
+    if (Render::pDirectInterface != nullptr)
     {
-        if (_device_free_callback != nullptr) _device_free_callback();
+        for (const auto& deviceFreeCallback : Render::deviceFreeCallbacks)
+        {
+            if (deviceFreeCallback != nullptr) deviceFreeCallback();
+        }
     }
 
-    _device_mutex.lock();
-    _direct_interface = _orig_interface;
-    _device_interface = *out_returned_device_interface;
-    _device_parameters = *presentation_parameters;
-    _device_mutex.unlock();
+    Render::deviceMutex.lock();
+    Render::pDirectInterface = this->pOrigInterface;
+    Render::pDeviceInterface = *ppReturnedDeviceInterface;
+    Render::deviceParameters = *pPresentationParameters;
+    Render::deviceMutex.unlock();
 
-    if (_device_init_callback != nullptr)
-        _device_init_callback(_direct_interface, _device_interface, _device_parameters);
+    for (const auto& deviceInitCallback : Render::deviceInitCallbacks)
+    {
+        if (deviceInitCallback != nullptr) deviceInitCallback(Render::pDirectInterface,
+            Render::pDeviceInterface, Render::deviceParameters);
+    }
 
-    *out_returned_device_interface = hook_device;
+    *ppReturnedDeviceInterface = pHookDevice;
 
-    return result;
+    return hResult;
 }
 
 // --------------------------------------------------------------------------------------------------
 
-IDirect3D9* CALLBACK Render::HookDirect3DCreate9(const UINT sdk_version) noexcept
+IDirect3D9* CALLBACK Render::HookDirect3DCreate9(const UINT SDKVersion) noexcept
 {
-    _hook_direct3d_create9->Disable();
-    auto orig_direct = GameDirect3DCreate9(sdk_version);
-    _hook_direct3d_create9->Enable();
+    Render::hookDirect3DCreate9->Disable();
+    auto pOrigDirect = GameDirect3DCreate9(SDKVersion);
+    Render::hookDirect3DCreate9->Enable();
 
-    if (orig_direct != nullptr)
+    if (pOrigDirect != nullptr)
     {
         Logger::LogToFile("[dbg:render:hookdirect3dcreate9] : intercepted instance "
-            "(ptr:%p) of IDirect3D9", orig_direct);
+            "(ptr:%p) of IDirect3D9", pOrigDirect);
 
-        if (const auto hook_direct = new (std::nothrow) IDirect3D9Hook(orig_direct); hook_direct != nullptr)
+        if (const auto pHookDirect = new (std::nothrow) IDirect3D9Hook(pOrigDirect); pHookDirect != nullptr)
         {
             Logger::LogToFile("[dbg:render:hookdirect3dcreate9] : pointer successfully "
-                "replaced from orig (ptr:%p) to hook (ptr:%p)", orig_direct, hook_direct);
+                "replaced from orig (ptr:%p) to hook (ptr:%p)", pOrigDirect, pHookDirect);
 
-            orig_direct = hook_direct;
+            pOrigDirect = pHookDirect;
         }
     }
 
-    return orig_direct;
+    return pOrigDirect;
 }
 
-bool Render::_init_status = false;
+bool Render::initStatus { false };
 
-std::mutex            Render::_device_mutex;
-IDirect3D9*           Render::_direct_interface = nullptr;
-IDirect3DDevice9*     Render::_device_interface = nullptr;
-D3DPRESENT_PARAMETERS Render::_device_parameters {};
+std::mutex Render::deviceMutex;
+IDirect3D9* Render::pDirectInterface { nullptr };
+IDirect3DDevice9* Render::pDeviceInterface { nullptr };
+D3DPRESENT_PARAMETERS Render::deviceParameters {};
 
-Render::DeviceInitCallback  Render::_device_init_callback;
-Render::BeforeResetCallback Render::_before_reset_callback;
-Render::BeginSceneCallback  Render::_begin_scene_callback;
-Render::RenderCallback      Render::_render_callback;
-Render::EndSceneCallback    Render::_end_scene_callback;
-Render::AfterResetCallback  Render::_after_reset_callback;
-Render::DeviceFreeCallback  Render::_device_free_callback;
+std::vector<Render::DeviceInitCallback> Render::deviceInitCallbacks;
+std::vector<Render::BeforeResetCallback> Render::beforeResetCallbacks;
+std::vector<Render::BeginSceneCallback> Render::beginSceneCallbacks;
+std::vector<Render::RenderCallback> Render::renderCallbacks;
+std::vector<Render::EndSceneCallback> Render::endSceneCallbacks;
+std::vector<Render::AfterResetCallback> Render::afterResetCallbacks;
+std::vector<Render::DeviceFreeCallback> Render::deviceFreeCallbacks;
 
-Memory::JumpHook Render::_hook_direct3d_create9;
+Memory::JumpHookPtr Render::hookDirect3DCreate9 { nullptr };

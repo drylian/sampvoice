@@ -1,22 +1,19 @@
 #include "StreamInfo.h"
 
 StreamInfo::StreamInfo(const StreamType type, const D3DCOLOR color, std::string name) noexcept
-    : _type  { type }
-    , _color { color }
-    , _name  { std::move(name) }
-{}
+    : type(type), color(color), name(std::move(name)) {}
 
 StreamType StreamInfo::GetType() const noexcept
 {
-    return _type;
+    return this->type;
 }
 
 D3DCOLOR StreamInfo::GetColor() const noexcept
 {
-    return _color;
+    return this->color;
 }
 
 const std::string& StreamInfo::GetName() const noexcept
 {
-    return _name;
+    return this->name;
 }

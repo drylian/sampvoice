@@ -18,29 +18,27 @@
 struct KeyEvent {
 
     KeyEvent() noexcept = default;
-    ~KeyEvent() noexcept = default;
     KeyEvent(const KeyEvent&) noexcept = default;
-    KeyEvent(KeyEvent&&) noexcept = default;
+    KeyEvent(KeyEvent&&) = delete;
     KeyEvent& operator=(const KeyEvent&) noexcept = default;
-    KeyEvent& operator=(KeyEvent&&) noexcept = default;
+    KeyEvent& operator=(KeyEvent&&) = delete;
 
 public:
 
-    KeyEvent(const BYTE key_id, const bool is_pressed, const int active_keys) noexcept
-        : key_id      { key_id }
-        , is_pressed  { is_pressed }
-        , active_keys { active_keys }
-    {}
+    explicit KeyEvent(BYTE keyId, bool isPressed, int activeKeys) noexcept
+        : keyId(keyId), isPressed(isPressed), activeKeys(activeKeys) {}
+
+    ~KeyEvent() noexcept = default;
 
 public:
 
-    BYTE key_id      = 0;
-    bool is_pressed  = false;
-    int  active_keys = 0;
+    BYTE keyId { NULL };
+    bool isPressed { false };
+    int activeKeys { 0 };
 
 };
 
-struct KeyFilter {
+class KeyFilter {
 
     KeyFilter() = delete;
     ~KeyFilter() = delete;
@@ -51,24 +49,24 @@ struct KeyFilter {
 
 public:
 
-    static bool AddKey(BYTE key_id) noexcept;
-    static bool RemoveKey(BYTE key_id) noexcept;
+    static bool AddKey(BYTE keyId) noexcept;
+    static bool RemoveKey(BYTE keyId) noexcept;
 
     static void RemoveAllKeys() noexcept;
     static void ReleaseAllKeys() noexcept;
 
-    static bool PushPressEvent(BYTE key_id) noexcept;
-    static bool PushReleaseEvent(BYTE key_id) noexcept;
+    static bool PushPressEvent(BYTE keyId) noexcept;
+    static bool PushReleaseEvent(BYTE keyId) noexcept;
 
     static bool PopEvent(KeyEvent& event) noexcept;
 
 private:
 
-    static SPSCQueue<KeyEvent> _key_queue;
+    static SPSCQueue<KeyEvent> keyQueue;
 
-    static std::array<bool, 256> _pressed_keys;
-    static std::array<bool, 256> _status_keys;
+    static std::array<bool, 256> pressedKeys;
+    static std::array<bool, 256> statusKeys;
 
-    static int _active_keys;
+    static int activeKeys;
 
 };

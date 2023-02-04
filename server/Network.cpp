@@ -25,8 +25,6 @@
 #include <util/logger.h>
 #include <util/memory.hpp>
 
-#include "Config.h"
-
 #ifdef _WIN32
 #define GetNetError() WSAGetLastError()
 #else
@@ -34,10 +32,6 @@
 #define closesocket(sock) close(sock)
 #define INVALID_SOCKET -1
 #define SOCKET_ERROR -1
-#endif
-
-#ifdef _WIN32
-#define socklen_t int
 #endif
 
 static inline uint64_t MakeQword(uint32_t ldword, uint32_t rdword) noexcept
@@ -161,7 +155,7 @@ bool Network::Bind() noexcept
 
         bindAddr.sin_family = AF_INET;
         bindAddr.sin_addr.s_addr = INADDR_ANY;
-        bindAddr.sin_port = htons(Config::AsInteger("sv_voice_port", NULL));
+        bindAddr.sin_port = NULL;
 
         if (bind(Network::socketHandle, (sockaddr*)(&bindAddr), sizeof(bindAddr)) == SOCKET_ERROR)
         {
@@ -176,7 +170,7 @@ bool Network::Bind() noexcept
 
     {
         sockaddr_in hostAddr {};
-        socklen_t hostAddrLen { sizeof(hostAddr) };
+        int hostAddrLen { sizeof(hostAddr) };
 
         if (getsockname(Network::socketHandle, (sockaddr*)(&hostAddr), &hostAddrLen) == SOCKET_ERROR)
         {
@@ -286,7 +280,7 @@ VoicePacketContainerPtr Network::ReceiveVoicePacket()
         return nullptr;
 
     sockaddr_in playerAddr {};
-    socklen_t addrLen { sizeof(playerAddr) };
+    int addrLen { sizeof(playerAddr) };
     char packetBuffer[kMaxVoicePacketSize];
 
     const auto length = recvfrom(Network::socketHandle, packetBuffer,

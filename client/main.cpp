@@ -12,37 +12,39 @@
 #include <string>
 #include <sstream>
 
-static std::string gLibraryName = "samp.dll";
+static std::string libraryName { "samp.dll" };
 
-static DWORD WINAPI LibraryWaitingThread(const LPVOID)
+static DWORD WINAPI LibraryWaitingThread(LPVOID)
 {
-    HMODULE samp_base_address;
+    HMODULE sampBaseAddress { nullptr };
 
-    while ((samp_base_address = GetModuleHandle(gLibraryName.c_str())) == nullptr)
+    while ((sampBaseAddress = GetModuleHandle(libraryName.c_str())) == nullptr)
         SleepForMilliseconds(50);
 
-    Plugin::OnSampLoad(samp_base_address);
+    Plugin::OnSampLoad(sampBaseAddress);
 
     return NULL;
 }
 
-BOOL APIENTRY DllMain(const HMODULE module, const DWORD reason, const LPVOID)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReasonForCall, LPVOID)
 {
-    if (reason != DLL_PROCESS_ATTACH)
+    if (dwReasonForCall != DLL_PROCESS_ATTACH)
         return TRUE;
 
-    if (!Plugin::OnPluginLoad(module))
+    if (!Plugin::OnPluginLoad(hModule))
         return FALSE;
 
-    if (const auto cmd_line = GetCommandLine(); cmd_line != nullptr)
+    if (const auto cmdLine = GetCommandLine(); cmdLine != nullptr)
     {
-        std::istringstream cmd_stream { cmd_line };
-        std::string        cmd_word;
+        std::istringstream cmdStream { cmdLine };
+        std::string iString;
 
-        while (cmd_stream >> cmd_word && cmd_word != "-svlib");
-        if (cmd_stream >> cmd_word) gLibraryName = std::move(cmd_word);
+        while (cmdStream >> iString && iString != "-svlib");
+        if (cmdStream >> iString) libraryName = std::move(iString);
     }
 
-    return CreateThread(NULL, 0, LibraryWaitingThread, NULL, NULL, NULL)
-        != nullptr ? TRUE : FALSE;
+    const auto waitingThread = CreateThread(NULL, 0,
+        LibraryWaitingThread, NULL, NULL, NULL);
+
+    return waitingThread != nullptr ? TRUE : FALSE;
 }

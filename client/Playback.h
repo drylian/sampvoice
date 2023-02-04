@@ -10,11 +10,10 @@
 #pragma once
 
 #include <audio/bass.h>
-
 #include <util/Memory.hpp>
 #include <util/AddressesBase.h>
 
-struct Playback {
+class Playback {
 
     Playback() = delete;
     ~Playback() = delete;
@@ -25,7 +24,7 @@ struct Playback {
 
 public:
 
-    static bool Init(const AddressesBase& addr_base) noexcept;
+    static bool Init(const AddressesBase& addrBase) noexcept;
     static void Free() noexcept;
 
     static void Tick() noexcept;
@@ -35,17 +34,18 @@ public:
     static bool GetSoundBalancer() noexcept;
     static bool GetSoundFilter() noexcept;
 
-    static void SetSoundEnable(bool sound_enable) noexcept;
-    static void SetSoundVolume(int sound_volume) noexcept;
-    static void SetSoundBalancer(bool sound_balancer) noexcept;
-    static void SetSoundFilter(bool sound_filter) noexcept;
+    static void SetSoundEnable(bool soundEnable) noexcept;
+    static void SetSoundVolume(int soundVolume) noexcept;
+    static void SetSoundBalancer(bool soundBalancer) noexcept;
+    static void SetSoundFilter(bool soundFilter) noexcept;
 
     static void SyncConfigs() noexcept;
     static void ResetConfigs() noexcept;
 
 private:
 
-    static BOOL WINAPI BassInitHookFunc(int device, DWORD freq, DWORD flags, HWND win, const GUID* dsguid) noexcept;
+    static BOOL WINAPI BassInitHookFunc(int device, DWORD freq, DWORD flags,
+                                        HWND win, const GUID* dsguid) noexcept;
 
 private:
 
@@ -54,6 +54,6 @@ private:
 
     static HSTREAM deviceOutputChannel;
 
-    static Memory::CallHook bassInitHook;
+    static Memory::CallHookPtr bassInitHook;
 
 };

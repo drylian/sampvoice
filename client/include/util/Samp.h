@@ -20,7 +20,7 @@
 #include "Memory.hpp"
 #include "AddressesBase.h"
 
-struct Samp {
+class Samp {
 
     Samp() = delete;
     ~Samp() = delete;
@@ -36,19 +36,22 @@ private:
 
 public:
 
-    static bool Init(const AddressesBase& addr_base) noexcept;
+    static bool Init(const AddressesBase& addrBase) noexcept;
     static bool IsInited() noexcept;
     static bool IsLoaded() noexcept;
     static void Free() noexcept;
 
-    static void AddClientCommand(const char* name, SAMP::CMDPROC handler) noexcept;
+    static void AddClientCommand(const char* cmdName, SAMP::CMDPROC cmdHandler) noexcept;
     static void AddMessageToChat(D3DCOLOR color, const char* message) noexcept;
     static void ToggleSampCursor(int mode) noexcept;
 
 public:
 
-    static void SetLoadCallback(LoadCallback&& callback) noexcept;
-    static void SetExitCallback(ExitCallback&& callback) noexcept;
+    static std::size_t AddLoadCallback(LoadCallback callback) noexcept;
+    static std::size_t AddExitCallback(ExitCallback callback) noexcept;
+
+    static void RemoveLoadCallback(std::size_t callback) noexcept;
+    static void RemoveExitCallback(std::size_t callback) noexcept;
 
 private:
 
@@ -57,13 +60,13 @@ private:
 
 private:
 
-    static bool _init_status;
-    static bool _load_status;
+    static bool initStatus;
+    static bool loadStatus;
 
-    static LoadCallback _load_callback;
-    static ExitCallback _exit_callback;
+    static std::vector<LoadCallback> loadCallbacks;
+    static std::vector<ExitCallback> exitCallbacks;
 
-    static Memory::JumpHook _hook_samp_init;
-    static Memory::JumpHook _hook_samp_free;
+    static Memory::JumpHookPtr hookSampInit;
+    static Memory::JumpHookPtr hookSampFree;
 
 };

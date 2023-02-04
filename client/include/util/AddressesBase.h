@@ -9,20 +9,23 @@
 
 #pragma once
 
+#include <memory>
+
 #include <Windows.h>
 
 struct AddressesBase {
 
-    AddressesBase() noexcept = default;
-    ~AddressesBase() noexcept = default;
+    AddressesBase() = delete;
     AddressesBase(const AddressesBase&) noexcept = default;
-    AddressesBase(AddressesBase&&) noexcept = default;
+    AddressesBase(AddressesBase&&) = delete;
     AddressesBase& operator=(const AddressesBase&) noexcept = default;
-    AddressesBase& operator=(AddressesBase&&) noexcept = default;
+    AddressesBase& operator=(AddressesBase&&) = delete;
 
 public:
 
-    AddressesBase(DWORD base_addr) noexcept;
+    explicit AddressesBase(DWORD baseAddr) noexcept;
+
+    ~AddressesBase() noexcept = default;
 
 public:
 
@@ -42,18 +45,21 @@ public:
 
 private:
 
-    DWORD _base_addr                    = NULL;
-    DWORD _rc_init_addr                 = NULL;
-    DWORD _bass_init_call_addr          = NULL;
-    DWORD _bass_set_config_addr         = NULL;
-    DWORD _samp_init_addr               = NULL;
-    DWORD _samp_destruct_addr           = NULL;
-    DWORD _open_chat_func               = NULL;
-    DWORD _switch_mode_func             = NULL;
-    DWORD _open_scoreboard_func         = NULL;
-    DWORD _create_player_in_pool_func   = NULL;
-    DWORD _delete_player_from_pool_func = NULL;
-    DWORD _spawn_local_player_func      = NULL;
-    DWORD _draw_label_func              = NULL;
+    DWORD baseAddr { NULL };
+    DWORD rcInitAddr { NULL };
+    DWORD bassInitCallAddr { NULL };
+    DWORD bassSetConfigAddr { NULL };
+    DWORD sampInitAddr { NULL };
+    DWORD sampDestructAddr { NULL };
+    DWORD openChatFunc { NULL };
+    DWORD switchModeFunc { NULL };
+    DWORD openScoreboardFunc { NULL };
+    DWORD createPlayerInPoolFunc { NULL };
+    DWORD deletePlayerFromPoolFunc { NULL };
+    DWORD spawnLocalPlayerFunc { NULL };
+    DWORD drawLabelFunc { NULL };
 
 };
+
+using AddressesBasePtr = std::unique_ptr<AddressesBase>;
+#define MakeAddressesBase std::make_unique<AddressesBase>

@@ -25,7 +25,7 @@ class StaticLocalStreamAtPlayer : public LocalStream {
 public:
 
     explicit StaticLocalStreamAtPlayer(float distance, uint16_t playerId,
-                                       uint32_t color, const std::vector<char>& name);
+                                       uint32_t color, const std::string& name);
 
     ~StaticLocalStreamAtPlayer() noexcept = default;
 

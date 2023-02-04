@@ -18,7 +18,7 @@
 
 #include "Header.h"
 
-struct BlackList {
+class BlackList {
 
     BlackList() = delete;
     ~BlackList() = delete;
@@ -32,39 +32,40 @@ public:
     struct LockedPlayer {
 
         LockedPlayer() = delete;
+        LockedPlayer(const LockedPlayer&) = delete;
+        LockedPlayer(LockedPlayer&&) = delete;
+        LockedPlayer& operator=(const LockedPlayer&) = delete;
+        LockedPlayer& operator=(LockedPlayer&&) = delete;
+
+    public:
+
+        explicit LockedPlayer(std::string playerName, WORD playerId) noexcept;
+
         ~LockedPlayer() noexcept = default;
-        LockedPlayer(const LockedPlayer&) = default;
-        LockedPlayer(LockedPlayer&&) noexcept = default;
-        LockedPlayer& operator=(const LockedPlayer&) = default;
-        LockedPlayer& operator=(LockedPlayer&&) noexcept = default;
 
     public:
 
-        LockedPlayer(std::string player_name, WORD player_id) noexcept;
-
-    public:
-
-        std::string player_name;
-        WORD        player_id = SV::kNonePlayer;
+        const std::string playerName;
+        WORD playerId { SV::kNonePlayer };
 
     };
 
 public:
 
-    static bool Init(const AddressesBase& addr_base) noexcept;
+    static bool Init(const AddressesBase& addrBase) noexcept;
     static void Free() noexcept;
 
-    static bool Load(const std::string& path);
-    static bool Save(const std::string& path);
+    static bool Load(const std::string& filePath);
+    static bool Save(const std::string& filePath);
 
-    static void LockPlayer(WORD player_id);
-    static void UnlockPlayer(WORD player_id);
-    static void UnlockPlayer(const std::string& player_name);
+    static void LockPlayer(WORD playerId);
+    static void UnlockPlayer(WORD playerId);
+    static void UnlockPlayer(const std::string& playerName);
 
     static const std::list<LockedPlayer>& RequestBlackList() noexcept;
 
-    static bool IsPlayerBlocked(WORD player_id) noexcept;
-    static bool IsPlayerBlocked(const std::string& player_name) noexcept;
+    static bool IsPlayerBlocked(WORD playerId) noexcept;
+    static bool IsPlayerBlocked(const std::string& playerName) noexcept;
 
 private:
 
@@ -76,11 +77,11 @@ private:
 
 private:
 
-    static bool _init_status;
+    static bool initStatus;
 
-    static std::list<LockedPlayer> _black_list;
+    static std::list<LockedPlayer> blackList;
 
-    static Memory::JumpHook _create_player_in_pool_hook;
-    static Memory::JumpHook _delete_player_in_pool_hook;
+    static Memory::JumpHookPtr createPlayerInPoolHook;
+    static Memory::JumpHookPtr deletePlayerInPoolHook;
 
 };

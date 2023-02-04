@@ -9,15 +9,13 @@
 
 #pragma once
 
-#include <cassert>
-#include <cstdio>
 #include <ctime>
-
+#include <iostream>
 #include <mutex>
 
 #include <ysf/globals.h>
 
-struct Logger {
+class Logger {
 
     Logger() = delete;
     ~Logger() = delete;
@@ -28,56 +26,58 @@ struct Logger {
 
 public:
 
-    static bool Init(const char* log_file, logprintf_t log_func) noexcept;
+    static bool Init(const char* logFile, logprintf_t logFunc) noexcept;
     static void Free() noexcept;
 
-public:
-
-    template <class... ARGS>
-    static void LogToFile(const char* const message, const ARGS... args) noexcept
+    template<class... ARGS>
+    static bool LogToFile(const char* const message, const ARGS... args) noexcept
     {
-        assert(message != nullptr);
+        const std::lock_guard<std::mutex> lock { Logger::logFileMutex };
 
-        const std::lock_guard lock { _log_file_mutex };
+        if (Logger::logFile == nullptr)
+            return false;
 
-        assert(_log_file != nullptr);
+        const auto cTime = std::time(nullptr);
+        const auto timeOfDay = std::localtime(&cTime);
 
-        const auto c_time = std::time(nullptr);
-        const auto time_of_day = std::localtime(&c_time);
-        assert(time_of_day != nullptr);
+        if (timeOfDay == nullptr)
+            return false;
 
-        std::fprintf(_log_file, "[%.2d:%.2d:%.2d] : ",
-            time_of_day->tm_hour, time_of_day->tm_min, time_of_day->tm_sec);
-        std::fprintf(_log_file, message, args...);
-        std::fputc('\n', _log_file);
-        std::fflush(_log_file);
+        std::fprintf(Logger::logFile, "[%.2d:%.2d:%.2d] : ",
+            timeOfDay->tm_hour, timeOfDay->tm_min, timeOfDay->tm_sec);
+        std::fprintf(Logger::logFile, message, args...);
+        std::fputc('\n', Logger::logFile);
+        std::fflush(Logger::logFile);
+
+        return true;
     }
 
-    template <class... ARGS>
-    static void LogToConsole(const char* const message, const ARGS... args) noexcept
+    template<class... ARGS>
+    static bool LogToConsole(const char* const message, const ARGS... args) noexcept
     {
-        assert(message != nullptr);
+        const std::lock_guard<std::mutex> lock { Logger::logConsoleMutex };
 
-        const std::lock_guard lock { _log_console_mutex };
+        if (Logger::logFunc == nullptr)
+            return false;
 
-        assert(_log_func != nullptr);
+        Logger::logFunc(message, args...);
 
-        _log_func(message, args...);
+        return true;
     }
 
-    template <class... ARGS>
-    static void Log(const char* const message, const ARGS... args) noexcept
+    template<class... ARGS>
+    static inline void Log(const char* const message, const ARGS... args) noexcept
     {
-        LogToFile(message, args...);
-        LogToConsole(message, args...);
+        Logger::LogToFile(message, args...);
+        Logger::LogToConsole(message, args...);
     }
 
 private:
 
-    static std::FILE*  _log_file;
-    static logprintf_t _log_func;
+    static FILE* logFile;
+    static logprintf_t logFunc;
 
-    static std::mutex  _log_file_mutex;
-    static std::mutex  _log_console_mutex;
+    static std::mutex logFileMutex;
+    static std::mutex logConsoleMutex;
 
 };
