@@ -1,4 +1,4 @@
-# **SAMPVOICE**
+# **SAMPVOICE Funcionando com PORTA**
 English | [Русский](https://github.com/CyberMor/sampvoice/blob/master/README.ru.md)
 
 ## Description
