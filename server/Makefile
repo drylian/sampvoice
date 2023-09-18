@@ -1,16 +1,20 @@
-OUTPUT_FILE = "sampvoice.so"
+OUTFILE = "sampvoice.so"
+BASS_PATH = $(shell pwd)
 
-COMMON_FLAGS = -m32 -O3 -Ofast -w -fpermissive
-COMPILE_FLAGS = $(COMMON_FLAGS) -c -idirafter "include"
-PRELINK_FLAGS = $(COMMON_FLAGS) -shared -static-libstdc++
+# base compile flags
+COMPILE_FLAGS=-m32 -fpack-struct=1 -fpermissive -c -O3 -w -idirafter "sdk"
+
+# base link flags
+LINK_FLAGS = -m32 -fpack-struct=1 -fpermissive -shared -O3 -static-libstdc++
+
+# bass link flags
+LINK_FLAGS += -L$(BASS_PATH) -lbass -lm -Wl,-rpath,$(BASS_PATH)
 
 all:
-	gcc-9 $(COMPILE_FLAGS) include/pawn/amx/*.h
-	g++-9 $(COMPILE_FLAGS) -std=c++11 include/pawn/*.cpp
-	g++-9 $(COMPILE_FLAGS) -std=c++11 include/raknet/*.cpp
-	g++-9 $(COMPILE_FLAGS) -std=c++17 include/util/*.cpp
-	g++-9 $(COMPILE_FLAGS) -std=c++11 include/ysf/*.cpp
-	g++-9 $(COMPILE_FLAGS) -std=c++17 *.cpp
-	g++-9 $(PRELINK_FLAGS) -o $(OUTPUT_FILE) *.o
-	strip -s $(OUTPUT_FILE)
+	gcc $(COMPILE_FLAGS) sdk/pawn/amx/*.h
+	g++ $(COMPILE_FLAGS) -std=c++11 sdk/pawn/*.cpp
+	g++ $(COMPILE_FLAGS) -std=c++11 sdk/raknet/*.cpp
+	g++ $(COMPILE_FLAGS) -std=c++14 *.cpp
+	g++ $(LINK_FLAGS) -o $(OUTFILE) *.o
 	rm *.o
+	strip -s $(OUTFILE)

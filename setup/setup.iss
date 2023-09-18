@@ -1,7 +1,7 @@
 #define MyAppName "SAMPVOICE"
-#define MyAppVersion "3.0"
+#define MyAppVersion "2.1"
 #define MyAppPublisher "Daniel Mor"
-#define MyAppURL "https://vk.com/sampvoicecom"
+#define MyAppURL "https://www.sampvoice.com"
 
 [Setup]
 AppId={{01EA93A6-5255-44FE-ADB9-FDC3EFE89675}
@@ -14,7 +14,7 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 UsePreviousAppDir=no
 
-DisableFinishedPage=no
+DisableFinishedPage=yes
 DisableWelcomePage=yes
 DisableReadyPage=yes
 DirExistsWarning=no
@@ -27,8 +27,8 @@ DefaultDirName={code:GetPathGTA}
 DefaultGroupName={#MyAppName}
 LanguageDetectionMethod=uilanguage
 AllowNoIcons=yes
-OutputDir=..\bin
-OutputBaseFilename=sv_setup
+OutputDir=bin
+OutputBaseFilename=sv_client
 SetupIconFile=icon.ico
 Compression=lzma
 SolidCompression=yes
